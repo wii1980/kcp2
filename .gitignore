@@ -1,0 +1,5 @@
+/target
+/.claude
+/kcp-c
+/results*
+bench

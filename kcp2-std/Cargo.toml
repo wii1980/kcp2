@@ -1,0 +1,42 @@
+[package]
+name = "kcp2-std"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+homepage.workspace = true
+description = "KCP protocol async implementation for Tokio — Actor model with KcpListener/KcpConnector"
+
+[features]
+default = []
+fastack_conserve = ["kcp2-core/fastack_conserve"]
+aead = ["dep:aes-gcm", "dep:chacha20poly1305", "dep:getrandom"]
+dtls = ["dep:webrtc-dtls", "dep:webrtc-util", "dep:base64ct", "dep:time"]
+
+[dependencies]
+kcp2-core = { version = "0.2.0", path = "../kcp2-core", features = ["std", "bytes"] }
+tokio = { version = "1", features = ["full"] }
+bytes = "1"
+log = "0.4"
+thiserror = "2.0"
+dashmap = "6"
+crossbeam-queue = "0.3"
+parking_lot = "0.12"
+futures-util = "0.3"
+aes-gcm = { version = "0.10", optional = true }
+chacha20poly1305 = { version = "0.10", optional = true }
+getrandom = { version = "0.2", optional = true }
+webrtc-dtls = { version = "0.12", optional = true }
+webrtc-util = { version = "0.11", optional = true, default-features = false, features = ["conn"] }
+base64ct = { version = "=1.6.0", optional = true }
+time = { version = "=0.3.41", optional = true }
+
+[dev-dependencies]
+rand = "0.8"
+tokio = { version = "1", features = ["full", "test-util"] }
+
+[lints]
+workspace = true

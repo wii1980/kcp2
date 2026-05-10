@@ -1,0 +1,107 @@
+========================================
+  kcp-c 纯 C 性能基准测试 (seed=42)
+  时钟: CLOCK_MONOTONIC_RAW
+  编译: -O3 -march=native -flto
+========================================
+
+=== Segment 编码 ===
+  segment_encode: min=   0.20 ns  mean=   0.20 ns  p50=   0.20 ns  p95=   0.20 ns  p99=   0.21 ns  max=   0.21 ns  stddev=   0.00 ns  throughput=589871.23 MB/s
+
+=== Segment 解码 ===
+  segment_decode: min=   0.20 ns  mean=   0.20 ns  p50=   0.20 ns  p95=   0.20 ns  p99=   0.20 ns  max=   0.20 ns  stddev=   0.00 ns  throughput=591213.04 MB/s
+
+=== Segment 编码多尺寸扫描 ===
+  segment_encode/0: min=   0.40 ns  mean=   0.42 ns  p50=   0.40 ns  p95=   0.40 ns  p99=   1.21 ns  max=   1.21 ns  stddev=   0.11 ns  throughput=54916.70 MB/s
+  segment_encode/64: min=   1.79 ns  mean=   1.79 ns  p50=   1.79 ns  p95=   1.79 ns  p99=   1.79 ns  max=   1.79 ns  stddev=   0.00 ns  throughput=46933.21 MB/s
+  segment_encode/256: min=   2.38 ns  mean=   2.40 ns  p50=   2.38 ns  p95=   2.38 ns  p99=   3.00 ns  max=   3.00 ns  stddev=   0.09 ns  throughput=111447.38 MB/s
+  segment_encode/1400: min=  10.32 ns  mean=  10.45 ns  p50=  10.37 ns  p95=  11.33 ns  p99=  12.04 ns  max=  12.04 ns  stddev=   0.33 ns  throughput=129973.10 MB/s
+
+=== 发送吞吐量: 小包 ===
+  send_small_packet: min=  47.46 ns  mean=  52.13 ns  p50=  49.65 ns  p95=  64.62 ns  p99= 104.00 ns  max= 104.00 ns  stddev=   8.92 ns  throughput=1829.42 MB/s
+
+=== 发送吞吐量: 大包 (10KB) ===
+  send_large_packet: min=3072.59 ns  mean=3465.97 ns  p50=3417.64 ns  p95=3938.99 ns  p99=4130.63 ns  max=4130.63 ns  stddev= 241.09 ns  throughput=2817.58 MB/s
+
+=== 发送吞吐量: 多尺寸扫描 ===
+  send/64: min=  29.79 ns  mean=  31.68 ns  p50=  30.60 ns  p95=  37.98 ns  p99=  42.50 ns  max=  42.50 ns  stddev=   2.95 ns  throughput=1926.48 MB/s
+  send/256: min=  74.67 ns  mean=  83.42 ns  p50=  77.99 ns  p95= 116.48 ns  p99= 134.56 ns  max= 134.56 ns  stddev=  12.93 ns  throughput=2926.49 MB/s
+  send/1024: min= 262.81 ns  mean= 290.97 ns  p50= 280.57 ns  p95= 342.31 ns  p99= 404.30 ns  max= 404.30 ns  stddev=  30.51 ns  throughput=3356.23 MB/s
+  send/1400: min= 413.37 ns  mean= 489.27 ns  p50= 456.54 ns  p95= 660.05 ns  p99= 790.92 ns  max= 790.92 ns  stddev=  87.13 ns  throughput=2728.84 MB/s
+
+=== Stream 模式发送 ===
+  send_stream_mode: min=  35.63 ns  mean=  37.62 ns  p50=  37.11 ns  p95=  41.46 ns  p99=  45.18 ns  max=  45.18 ns  stddev=   1.84 ns  throughput=2535.26 MB/s
+
+=== Input 吞吐量 ===
+  input: min=  12.18 ns  mean=  12.92 ns  p50=  12.59 ns  p95=  15.90 ns  p99=  17.35 ns  max=  17.35 ns  stddev=   1.06 ns  throughput=9155.82 MB/s
+
+=== Recv 吞吐量 ===
+  recv: min=   2.82 ns  mean=   2.84 ns  p50=   2.82 ns  p95=   2.84 ns  p99=   3.63 ns  max=   3.63 ns  stddev=   0.11 ns  throughput=   0.00 MB/s
+
+=== Flush 吞吐量 ===
+  flush: min=   4.43 ns  mean=   4.56 ns  p50=   4.63 ns  p95=   4.73 ns  p99=   5.10 ns  max=   5.10 ns  stddev=   0.13 ns  throughput=   0.00 MB/s
+
+=== Update 吞吐量 ===
+  update: min=   1.81 ns  mean=   1.85 ns  p50=   1.81 ns  p95=   2.08 ns  p99=   2.16 ns  max=   2.16 ns  stddev=   0.08 ns  throughput=   0.00 MB/s
+
+=== 回环通信 ===
+  loopback: min=  17.10 ns  mean=  18.21 ns  p50=  17.15 ns  p95=  26.32 ns  p99=  28.10 ns  max=  28.10 ns  stddev=   2.88 ns  throughput= 628.37 MB/s
+
+=== 乱序入队 ===
+  out_of_order: min= 861.14 ns  mean= 916.65 ns  p50= 889.27 ns  p95=1014.37 ns  p99=1305.03 ns  max=1305.03 ns  stddev=  81.35 ns  throughput=   0.00 MB/s
+
+=== 多连接并发 ===
+  multi_connection: min= 167.61 ns  mean= 197.71 ns  p50= 170.69 ns  p95= 350.27 ns  p99= 596.41 ns  max= 596.41 ns  stddev=  82.57 ns  throughput=   0.00 MB/s
+
+=== 网络模拟 (10% 丢包, 60~125ms RTT) ===
+[RECV] mode=0 sn=0 rtt=419
+[RECV] mode=0 sn=1 rtt=589
+[RECV] mode=0 sn=2 rtt=569
+[RECV] mode=0 sn=3 rtt=747
+[RECV] mode=0 sn=4 rtt=727
+[RECV] mode=0 sn=99 rtt=6218
+[RECV] mode=0 sn=199 rtt=8417
+[RECV] mode=0 sn=299 rtt=13108
+[RECV] mode=0 sn=399 rtt=18066
+[RECV] mode=0 sn=499 rtt=20546
+[RECV] mode=0 sn=599 rtt=24685
+[RECV] mode=0 sn=699 rtt=29462
+[RECV] mode=0 sn=799 rtt=34340
+[RECV] mode=0 sn=899 rtt=42985
+[RECV] mode=0 sn=999 rtt=49002
+  mode=default: avgrtt=22456 maxrtt=49002 tx=408 (1000 pkts)
+[RECV] mode=1 sn=0 rtt=182
+[RECV] mode=1 sn=1 rtt=428
+[RECV] mode=1 sn=2 rtt=408
+[RECV] mode=1 sn=3 rtt=388
+[RECV] mode=1 sn=4 rtt=368
+[RECV] mode=1 sn=99 rtt=465
+[RECV] mode=1 sn=199 rtt=388
+[RECV] mode=1 sn=299 rtt=354
+[RECV] mode=1 sn=399 rtt=841
+[RECV] mode=1 sn=499 rtt=459
+[RECV] mode=1 sn=599 rtt=501
+[RECV] mode=1 sn=699 rtt=555
+[RECV] mode=1 sn=799 rtt=443
+[RECV] mode=1 sn=899 rtt=214
+[RECV] mode=1 sn=999 rtt=260
+  mode=normal: avgrtt=564 maxrtt=2090 tx=1158 (1000 pkts)
+[RECV] mode=2 sn=0 rtt=182
+[RECV] mode=2 sn=1 rtt=948
+[RECV] mode=2 sn=2 rtt=928
+[RECV] mode=2 sn=3 rtt=908
+[RECV] mode=2 sn=4 rtt=888
+[RECV] mode=2 sn=99 rtt=266
+[RECV] mode=2 sn=199 rtt=347
+[RECV] mode=2 sn=299 rtt=231
+[RECV] mode=2 sn=399 rtt=176
+[RECV] mode=2 sn=499 rtt=243
+[RECV] mode=2 sn=599 rtt=359
+[RECV] mode=2 sn=699 rtt=289
+[RECV] mode=2 sn=799 rtt=399
+[RECV] mode=2 sn=899 rtt=262
+[RECV] mode=2 sn=999 rtt=472
+  mode=fast: avgrtt=362 maxrtt=948 tx=1259 (1000 pkts)
+
+========================================
+  所有测试完成!
+========================================

@@ -1,0 +1,32 @@
+[package]
+name = "kcp2-embassy"
+version.workspace = true
+edition = "2021"
+rust-version = "1.85"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+homepage.workspace = true
+description = "KCP protocol async implementation for Embassy — targeting ESP32 and other no_std devices"
+readme = "README.md"
+
+[features]
+default = []
+esp32c3 = []
+esp32s3 = []
+aead = ["dep:aes-gcm", "dep:chacha20poly1305"]
+
+[dependencies]
+kcp2-core = { version = "0.2.0", path = "../kcp2-core", default-features = false, features = ["alloc"] }
+embassy-executor = { version = "0.10", default-features = false, optional = true }
+embassy-time = "0.5"
+embassy-net = { version = "0.9", features = ["udp", "dhcpv4", "medium-ethernet", "proto-ipv4"] }
+embassy-sync = "0.8"
+embassy-futures = "0.1"
+heapless = { version = "0.8", default-features = false }
+log = { version = "0.4", default-features = false }
+static_cell = "2"
+aes-gcm = { version = "0.10", default-features = false, features = ["alloc", "aes"], optional = true }
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"], optional = true }

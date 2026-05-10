@@ -1,0 +1,81 @@
+[workspace]
+resolver = "2"
+members = [
+    "kcp2-core",
+    "kcp2-std",
+    "kcp2-embassy",
+]
+exclude = [
+    "examples/embassy-esp32",
+    "examples/embassy-esp32-heartbeat",
+]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.75"
+authors = ["wfeii1980 <wfeii@163.com>"]
+license = "MIT"
+repository = "https://gitee.com/wfeii1980/rs-kcp2"
+homepage = "https://gitee.com/wfeii1980/rs-kcp2"
+readme = "README.md"
+keywords = ["kcp", "udp", "protocol", "reliable", "networking"]
+categories = ["network-programming", "asynchronous", "embedded"]
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+# kcp2 兼容层（重新导出 kcp2-std）
+[package]
+name = "kcp2"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Rust implementation of KCP protocol with async support (std/no_std/Embassy)"
+
+[features]
+default = ["fastack_conserve"]
+fastack_conserve = ["kcp2-std/fastack_conserve"]
+aead = ["kcp2-std/aead"]
+dtls = ["kcp2-std/dtls"]
+
+[dependencies]
+kcp2-std = { version = "0.2.0", path = "kcp2-std" }
+
+# 原始 benchmark 依赖
+[dev-dependencies]
+rand = "0.8"
+criterion = { version = "0.5", features = ["html_reports"] }
+tokio = { version = "1", features = ["full"] }
+once_cell = "1"
+kcp2-core = { version = "0.2.0", path = "kcp2-core" }
+kcp2-std = { version = "0.2.0", path = "kcp2-std" }
+
+clap_lex = { version = "=1.0.1" }
+rayon-core = { version = "=1.12.1" }
+half = { version = "=2.4.1"}
+
+[[bench]]
+name = "kcp_benchmark"
+harness = false
+
+[[bench]]
+name = "listener_benchmark"
+harness = false
+
+[[bench]]
+name = "concurrent_stress"
+harness = false
+
+[lints]
+workspace = true

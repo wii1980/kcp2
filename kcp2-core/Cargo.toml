@@ -1,0 +1,33 @@
+[package]
+name = "kcp2-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+homepage.workspace = true
+description = "KCP protocol core implementation — no_std compatible, zero-dependency network layer"
+readme = "README.md"
+
+[features]
+default = ["std", "fastack_conserve"]
+std = ["alloc"]
+alloc = []
+heapless = ["dep:heapless"]
+bytes = ["dep:bytes", "alloc"]
+fastack_conserve = []
+
+# alloc 和 heapless 互斥：heapless 模式下强制关闭 alloc
+# Cargo 不支持 feature 冲突声明，但 bytes 依赖 alloc，确保 heapless-only 时不引入 alloc
+
+[dependencies]
+log = { version = "0.4", default-features = false }
+heapless = { version = "0.8", optional = true, default-features = false }
+bytes = { version = "1", optional = true }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

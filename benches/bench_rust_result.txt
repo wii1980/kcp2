@@ -1,0 +1,250 @@
+    Finished bench [optimized] target(s) in 0.03s
+     Running benches/kcp_benchmark.rs (target/release/deps/kcp_benchmark-aa90fab76af66260)
+Benchmarking segment_encode
+Benchmarking segment_encode: Warming up for 3.0000 s
+Benchmarking segment_encode: Collecting 100 samples in estimated 5.0000 s (959M iterations)
+Benchmarking segment_encode: Analyzing
+segment_encode          time:   [5.0866 ns 5.1285 ns 5.1694 ns]
+                        change: [-0.6833% +0.4251% +1.7656%] (p = 0.58 > 0.05)
+                        No change in performance detected.
+Found 3 outliers among 100 measurements (3.00%)
+  1 (1.00%) high mild
+  2 (2.00%) high severe
+
+Benchmarking segment_decode
+Benchmarking segment_decode: Warming up for 3.0000 s
+Benchmarking segment_decode: Collecting 100 samples in estimated 5.0000 s (611M iterations)
+Benchmarking segment_decode: Analyzing
+segment_decode          time:   [8.1044 ns 8.1330 ns 8.1640 ns]
+                        change: [-2.6675% -2.1064% -1.5731%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 4 outliers among 100 measurements (4.00%)
+  4 (4.00%) high mild
+
+Benchmarking segment_encode_sweep/encode/0
+Benchmarking segment_encode_sweep/encode/0: Warming up for 3.0000 s
+Benchmarking segment_encode_sweep/encode/0: Collecting 100 samples in estimated 5.0001 s (351M iterations)
+Benchmarking segment_encode_sweep/encode/0: Analyzing
+segment_encode_sweep/encode/0
+                        time:   [12.121 ns 12.142 ns 12.170 ns]
+                        thrpt:  [1.8366 GiB/s 1.8409 GiB/s 1.8441 GiB/s]
+                 change:
+                        time:   [-13.372% -12.939% -12.535%] (p = 0.00 < 0.05)
+                        thrpt:  [+14.332% +14.862% +15.436%]
+                        Performance has improved.
+Found 11 outliers among 100 measurements (11.00%)
+  2 (2.00%) high mild
+  9 (9.00%) high severe
+Benchmarking segment_encode_sweep/encode/64
+Benchmarking segment_encode_sweep/encode/64: Warming up for 3.0000 s
+Benchmarking segment_encode_sweep/encode/64: Collecting 100 samples in estimated 5.0000 s (325M iterations)
+Benchmarking segment_encode_sweep/encode/64: Analyzing
+segment_encode_sweep/encode/64
+                        time:   [13.268 ns 13.299 ns 13.339 ns]
+                        thrpt:  [6.1440 GiB/s 6.1627 GiB/s 6.1768 GiB/s]
+                 change:
+                        time:   [-11.816% -11.532% -11.236%] (p = 0.00 < 0.05)
+                        thrpt:  [+12.658% +13.036% +13.400%]
+                        Performance has improved.
+Found 10 outliers among 100 measurements (10.00%)
+  4 (4.00%) high mild
+  6 (6.00%) high severe
+Benchmarking segment_encode_sweep/encode/256
+Benchmarking segment_encode_sweep/encode/256: Warming up for 3.0000 s
+Benchmarking segment_encode_sweep/encode/256: Collecting 100 samples in estimated 5.0000 s (304M iterations)
+Benchmarking segment_encode_sweep/encode/256: Analyzing
+segment_encode_sweep/encode/256
+                        time:   [14.313 ns 14.380 ns 14.465 ns]
+                        thrpt:  [18.027 GiB/s 18.134 GiB/s 18.219 GiB/s]
+                 change:
+                        time:   [-11.692% -10.982% -10.402%] (p = 0.00 < 0.05)
+                        thrpt:  [+11.610% +12.337% +13.240%]
+                        Performance has improved.
+Found 8 outliers among 100 measurements (8.00%)
+  5 (5.00%) high mild
+  3 (3.00%) high severe
+Benchmarking segment_encode_sweep/encode/1400
+Benchmarking segment_encode_sweep/encode/1400: Warming up for 3.0000 s
+Benchmarking segment_encode_sweep/encode/1400: Collecting 100 samples in estimated 5.0001 s (180M iterations)
+Benchmarking segment_encode_sweep/encode/1400: Analyzing
+segment_encode_sweep/encode/1400
+                        time:   [25.716 ns 25.829 ns 25.962 ns]
+                        thrpt:  [51.083 GiB/s 51.345 GiB/s 51.572 GiB/s]
+                 change:
+                        time:   [+2.1902% +2.6676% +3.1370%] (p = 0.00 < 0.05)
+                        thrpt:  [-3.0416% -2.5983% -2.1433%]
+                        Performance has regressed.
+Found 3 outliers among 100 measurements (3.00%)
+  1 (1.00%) low mild
+  2 (2.00%) high severe
+
+Benchmarking send_throughput_misc/send_small_packet
+Benchmarking send_throughput_misc/send_small_packet: Warming up for 3.0000 s
+Benchmarking send_throughput_misc/send_small_packet: Collecting 50 samples in estimated 5.0026 s (1.8M iterations)
+Benchmarking send_throughput_misc/send_small_packet: Analyzing
+send_throughput_misc/send_small_packet
+                        time:   [35.114 ns 38.650 ns 42.212 ns]
+                        thrpt:  [2.2063 GiB/s 2.4096 GiB/s 2.6523 GiB/s]
+                 change:
+                        time:   [-6.5303% +4.9098% +17.352%] (p = 0.41 > 0.05)
+                        thrpt:  [-14.786% -4.6800% +6.9866%]
+                        No change in performance detected.
+Found 4 outliers among 50 measurements (8.00%)
+  3 (6.00%) high mild
+  1 (2.00%) high severe
+
+Benchmarking send_throughput_misc/send_large_packet
+Benchmarking send_throughput_misc/send_large_packet: Warming up for 3.0000 s
+Benchmarking send_throughput_misc/send_large_packet: Collecting 50 samples in estimated 5.0077 s (754k iterations)
+Benchmarking send_throughput_misc/send_large_packet: Analyzing
+send_throughput_misc/send_large_packet
+                        time:   [733.71 ns 752.18 ns 768.72 ns]
+                        thrpt:  [12.406 GiB/s 12.679 GiB/s 12.998 GiB/s]
+                 change:
+                        time:   [-9.8995% +1.1903% +13.035%] (p = 0.84 > 0.05)
+                        thrpt:  [-11.532% -1.1763% +10.987%]
+                        No change in performance detected.
+Found 5 outliers among 50 measurements (10.00%)
+  5 (10.00%) low mild
+
+Benchmarking send_throughput/send/64
+Benchmarking send_throughput/send/64: Warming up for 3.0000 s
+Benchmarking send_throughput/send/64: Collecting 50 samples in estimated 5.0015 s (2.0M iterations)
+Benchmarking send_throughput/send/64: Analyzing
+send_throughput/send/64 time:   [33.053 ns 35.094 ns 37.442 ns]
+                        thrpt:  [1.5919 GiB/s 1.6984 GiB/s 1.8033 GiB/s]
+                 change:
+                        time:   [-7.9990% +1.0259% +10.884%] (p = 0.83 > 0.05)
+                        thrpt:  [-9.8154% -1.0155% +8.6945%]
+                        No change in performance detected.
+Found 4 outliers among 50 measurements (8.00%)
+  4 (8.00%) high mild
+Benchmarking send_throughput/send/256
+Benchmarking send_throughput/send/256: Warming up for 3.0000 s
+Benchmarking send_throughput/send/256: Collecting 50 samples in estimated 5.0019 s (1.9M iterations)
+Benchmarking send_throughput/send/256: Analyzing
+send_throughput/send/256
+                        time:   [37.503 ns 40.723 ns 44.550 ns]
+                        thrpt:  [5.3517 GiB/s 5.8547 GiB/s 6.3574 GiB/s]
+                 change:
+                        time:   [-5.0671% +5.4666% +17.571%] (p = 0.35 > 0.05)
+                        thrpt:  [-14.945% -5.1832% +5.3376%]
+                        No change in performance detected.
+Found 3 outliers among 50 measurements (6.00%)
+  1 (2.00%) high mild
+  2 (4.00%) high severe
+Benchmarking send_throughput/send/1024
+Benchmarking send_throughput/send/1024: Warming up for 3.0000 s
+Benchmarking send_throughput/send/1024: Collecting 50 samples in estimated 5.0014 s (1.7M iterations)
+Benchmarking send_throughput/send/1024: Analyzing
+send_throughput/send/1024
+                        time:   [83.891 ns 88.386 ns 92.897 ns]
+                        thrpt:  [10.266 GiB/s 10.790 GiB/s 11.368 GiB/s]
+                 change:
+                        time:   [-11.500% -1.8619% +9.6557%] (p = 0.73 > 0.05)
+                        thrpt:  [-8.8055% +1.8972% +12.994%]
+                        No change in performance detected.
+Benchmarking send_throughput/send/1400
+Benchmarking send_throughput/send/1400: Warming up for 3.0000 s
+Benchmarking send_throughput/send/1400: Collecting 50 samples in estimated 5.0014 s (1.7M iterations)
+Benchmarking send_throughput/send/1400: Analyzing
+send_throughput/send/1400
+                        time:   [115.88 ns 120.41 ns 124.82 ns]
+                        thrpt:  [10.446 GiB/s 10.828 GiB/s 11.252 GiB/s]
+                 change:
+                        time:   [-12.777% -2.9725% +7.6494%] (p = 0.60 > 0.05)
+                        thrpt:  [-7.1058% +3.0635% +14.649%]
+                        No change in performance detected.
+
+Benchmarking stream_throughput/send_stream_mode
+Benchmarking stream_throughput/send_stream_mode: Warming up for 3.0000 s
+Benchmarking stream_throughput/send_stream_mode: Collecting 50 samples in estimated 5.0022 s (1.9M iterations)
+Benchmarking stream_throughput/send_stream_mode: Analyzing
+stream_throughput/send_stream_mode
+                        time:   [36.981 ns 40.554 ns 44.244 ns]
+                        thrpt:  [2.1050 GiB/s 2.2965 GiB/s 2.5184 GiB/s]
+                 change:
+                        time:   [-16.242% -5.6010% +6.4012%] (p = 0.34 > 0.05)
+                        thrpt:  [-6.0161% +5.9333% +19.392%]
+                        No change in performance detected.
+Found 1 outliers among 50 measurements (2.00%)
+  1 (2.00%) high mild
+
+Benchmarking input_throughput/input
+Benchmarking input_throughput/input: Warming up for 3.0000 s
+Benchmarking input_throughput/input: Collecting 50 samples in estimated 5.0021 s (1.7M iterations)
+Benchmarking input_throughput/input: Analyzing
+input_throughput/input  time:   [175.94 ns 192.87 ns 206.89 ns]
+                        thrpt:  [571.58 MiB/s 613.13 MiB/s 672.14 MiB/s]
+                 change:
+                        time:   [-2.0208% +10.292% +24.714%] (p = 0.11 > 0.05)
+                        thrpt:  [-19.817% -9.3318% +2.0625%]
+                        No change in performance detected.
+
+Benchmarking recv_throughput/recv
+Benchmarking recv_throughput/recv: Warming up for 3.0000 s
+Benchmarking recv_throughput/recv: Collecting 50 samples in estimated 5.0012 s (3.2M iterations)
+Benchmarking recv_throughput/recv: Analyzing
+recv_throughput/recv    time:   [55.004 ns 57.627 ns 60.241 ns]
+                        thrpt:  [443.27 MiB/s 463.38 MiB/s 485.47 MiB/s]
+                 change:
+                        time:   [-8.0063% +0.5680% +9.8170%] (p = 0.90 > 0.05)
+                        thrpt:  [-8.9394% -0.5648% +8.7030%]
+                        No change in performance detected.
+
+Benchmarking flush
+Benchmarking flush: Warming up for 3.0000 s
+Benchmarking flush: Collecting 50 samples in estimated 5.0001 s (2.2M iterations)
+Benchmarking flush: Analyzing
+flush                   time:   [36.669 ns 38.551 ns 40.638 ns]
+                        change: [-13.253% -7.3428% -0.8933%] (p = 0.03 < 0.05)
+                        Change within noise threshold.
+Found 2 outliers among 50 measurements (4.00%)
+  1 (2.00%) high mild
+  1 (2.00%) high severe
+
+Benchmarking update
+Benchmarking update: Warming up for 3.0000 s
+Benchmarking update: Collecting 50 samples in estimated 5.0016 s (2.1M iterations)
+Benchmarking update: Analyzing
+update                  time:   [40.328 ns 43.202 ns 45.415 ns]
+                        change: [-29.532% -19.020% -6.2802%] (p = 0.01 < 0.05)
+                        Performance has improved.
+
+Benchmarking loopback_throughput/loopback
+Benchmarking loopback_throughput/loopback: Warming up for 3.0000 s
+Benchmarking loopback_throughput/loopback: Collecting 50 samples in estimated 5.0002 s (2.0M iterations)
+Benchmarking loopback_throughput/loopback: Analyzing
+loopback_throughput/loopback
+                        time:   [456.67 ns 465.93 ns 475.09 ns]
+                        thrpt:  [24.089 MiB/s 24.562 MiB/s 25.060 MiB/s]
+                 change:
+                        time:   [-10.956% -4.5094% +2.4498%] (p = 0.21 > 0.05)
+                        thrpt:  [-2.3912% +4.7223% +12.304%]
+                        No change in performance detected.
+Found 5 outliers among 50 measurements (10.00%)
+  2 (4.00%) low severe
+  3 (6.00%) low mild
+
+Benchmarking out_of_order
+Benchmarking out_of_order: Warming up for 3.0000 s
+Benchmarking out_of_order: Collecting 30 samples in estimated 10.001 s (1.1M iterations)
+Benchmarking out_of_order: Analyzing
+out_of_order            time:   [6.1832 µs 6.2134 µs 6.2430 µs]
+                        change: [-27.836% -26.747% -25.605%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 30 measurements (6.67%)
+  2 (6.67%) low mild
+
+Benchmarking multi_connection
+Benchmarking multi_connection: Warming up for 3.0000 s
+Benchmarking multi_connection: Collecting 30 samples in estimated 10.002 s (753k iterations)
+Benchmarking multi_connection: Analyzing
+multi_connection        time:   [2.1250 µs 2.1481 µs 2.1687 µs]
+                        change: [-2.5142% +1.2636% +5.8696%] (p = 0.58 > 0.05)
+                        No change in performance detected.
+Found 3 outliers among 30 measurements (10.00%)
+  1 (3.33%) low severe
+  1 (3.33%) high mild
+  1 (3.33%) high severe
+

@@ -1,0 +1,48 @@
+[package]
+name = "embassy-esp32-heartbeat"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+kcp2-core = { path = "../../kcp2-core", default-features = false, features = ["alloc"] }
+kcp2-embassy = { path = "../../kcp2-embassy" }
+embassy-executor = "0.9"
+embassy-net = { version = "0.9.0", features = ["udp", "dhcpv4", "medium-ethernet", "proto-ipv4"] }
+embassy-time = "0.5.0"
+embassy-futures = "0.1"
+esp-alloc = "0.9"
+esp-backtrace = { version = "0.18", features = ["panic-handler", "println"] }
+esp-bootloader-esp-idf = "0.4"
+esp-hal = { version = "1.0.0", features = ["rt", "unstable", "log-04"] }
+esp-println = { version = "0.16", features = ["log-04", "auto"] }
+esp-rtos = { version = "0.2", features = ["esp-radio", "embassy", "log-04", "esp-alloc"] }
+esp-radio = { version = "0.17", features = ["wifi"] }
+static_cell = "2"
+log = "0.4"
+
+[features]
+aead = ["kcp2-embassy/aead"]
+aead-aes = ["aead"]
+esp32c3 = [
+    "esp-backtrace/esp32c3",
+    "esp-bootloader-esp-idf/esp32c3",
+    "esp-hal/esp32c3",
+    "esp-println/esp32c3",
+    "esp-rtos/esp32c3",
+    "esp-radio/esp32c3",
+]
+esp32s3 = [
+    "esp-backtrace/esp32s3",
+    "esp-bootloader-esp-idf/esp32s3",
+    "esp-hal/esp32s3",
+    "esp-println/esp32s3",
+    "esp-rtos/esp32s3",
+    "esp-radio/esp32s3",
+]
+
+[profile.release]
+debug = true
+debug-assertions = true
+lto = "fat"
+codegen-units = 1
