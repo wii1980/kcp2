@@ -1,0 +1,31 @@
+# cargo-release configuration
+# See: https://github.com/crate-ci/cargo-release/blob/master/docs/reference.md
+
+# ── Branch ──────────────────────────────────────────────────────────────────
+allow-branch = ["main"]
+
+# ── Commit ──────────────────────────────────────────────────────────────────
+consolidate-commits        = false
+pre-release-commit-message = "chore: release {{crate_name}} v{{version}}"
+
+# ── Tag ─────────────────────────────────────────────────────────────────────
+tag         = true
+tag-name    = "v{{version}}"
+tag-message = "chore: release {{crate_name}} v{{version}}"
+
+# ── Push ────────────────────────────────────────────────────────────────────
+push         = true
+push-remote  = "release"
+
+# ── Publish ─────────────────────────────────────────────────────────────────
+publish = true
+verify  = true
+
+# ── Version ─────────────────────────────────────────────────────────────────
+dependent-version = "upgrade"
+
+# ── Pre-release replacements ────────────────────────────────────────────────
+pre-release-replacements = [
+  { file = "README.md",    search = "hybrid-version = \"[^\"]+\"", replace = "hybrid-version = \"{{version}}\"" },
+  { file = "README_CN.md", search = "hybrid-version = \"[^\"]+\"", replace = "hybrid-version = \"{{version}}\"" },
+]

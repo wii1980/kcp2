@@ -23,15 +23,22 @@
 //!
 //! # 使用示例
 //!
-//! ```rust,ignore
+//! ```rust,no_run
+//! # #[cfg(feature = "aead")]
+//! # mod _inner {
+//! # fn main() {
+//! use std::sync::Arc;
 //! use kcp2_std::crypto::{KcpCrypto, Aes256GcmCrypto};
+//! use kcp2_std::KcpConfig;
 //!
 //! let key = Aes256GcmCrypto::generate_key();
 //! let crypto = Arc::new(Aes256GcmCrypto::new(&key));
 //!
 //! let config = KcpConfig::default()
 //!     .crypto(crypto.clone())
-//!     .mtu(1400);  // 内部自动扣除 crypto.overhead()
+//!     .mtu(1400);  // internally deducts crypto.overhead() from MTU
+//! # }
+//! # }
 //! ```
 
 use std::sync::Arc;

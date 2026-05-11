@@ -82,7 +82,7 @@ For the full list of configuration options see [`set_nodelay`](src/kcp/alloc_imp
 
 ## Related Crates
 
-- **[rs-kcp](https://gitee.com/wfeii1980/rs-kcp2)** — Full async KCP implementation with sockets (`kcp2-std`, `kcp2-embassy`)
+- **[rs-kcp2](https://github.com/wii1980/kcp2)** — Full async KCP implementation with sockets (`kcp2-std`, `kcp2-embassy`)
 
 ## License
 

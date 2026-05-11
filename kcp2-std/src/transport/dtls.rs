@@ -14,7 +14,11 @@
 //!
 //! # 示例：PSK 客户端
 //!
-//! ```rust,ignore
+//! ```rust,no_run
+//! # #[cfg(feature = "dtls")]
+//! # mod _inner {
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use std::sync::Arc;
 //! use kcp2_std::transport::{DtlsClientTransport, DtlsConfig};
 //! use kcp2_std::{KcpConnector, KcpConfig};
@@ -25,11 +29,18 @@
 //!     .conv(1)
 //!     .connect()
 //!     .await?;
+//! # Ok(())
+//! # }
+//! # }
 //! ```
 //!
 //! # 示例：PSK 服务端
 //!
-//! ```rust,ignore
+//! ```rust,no_run
+//! # #[cfg(feature = "dtls")]
+//! # mod _inner {
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use std::sync::Arc;
 //! use kcp2_std::transport::{DtlsServerTransport, DtlsConfig};
 //! use kcp2_std::{KcpListener, KcpConfig};
@@ -37,6 +48,9 @@
 //! let cfg = DtlsConfig::server_psk(b"shared-secret".to_vec(), b"kcp2");
 //! let transport = Arc::new(DtlsServerTransport::bind("0.0.0.0:12345", cfg).await?);
 //! let listener = KcpListener::from_transport(transport, KcpConfig::default())?;
+//! # Ok(())
+//! # }
+//! # }
 //! ```
 //!
 //! # 与整包 AEAD（`aead` feature）的互斥

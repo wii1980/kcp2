@@ -11,13 +11,12 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.2.0"
 edition = "2021"
 rust-version = "1.75"
 authors = ["wfeii1980 <wfeii@163.com>"]
 license = "MIT"
-repository = "https://gitee.com/wfeii1980/rs-kcp2"
-homepage = "https://gitee.com/wfeii1980/rs-kcp2"
+repository = "https://github.com/wii1980/kcp2"
+homepage = "https://github.com/wii1980/kcp2"
 readme = "README.md"
 keywords = ["kcp", "udp", "protocol", "reliable", "networking"]
 categories = ["network-programming", "asynchronous", "embedded"]
@@ -32,8 +31,9 @@ pedantic = "warn"
 # kcp2 兼容层（重新导出 kcp2-std）
 [package]
 name = "kcp2"
-version.workspace = true
+version = "0.2.0"
 edition.workspace = true
+exclude = ["publish.sh", "qa.sh", "scripts/", "ESP32_PORTING_GUIDE.md"]
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -50,7 +50,7 @@ aead = ["kcp2-std/aead"]
 dtls = ["kcp2-std/dtls"]
 
 [dependencies]
-kcp2-std = { version = "0.2.0", path = "kcp2-std" }
+kcp2-std = { version = "0.1.0", path = "kcp2-std" }
 
 # 原始 benchmark 依赖
 [dev-dependencies]
@@ -58,8 +58,8 @@ rand = "0.8"
 criterion = { version = "0.5", features = ["html_reports"] }
 tokio = { version = "1", features = ["full"] }
 once_cell = "1"
-kcp2-core = { version = "0.2.0", path = "kcp2-core" }
-kcp2-std = { version = "0.2.0", path = "kcp2-std" }
+kcp2-core = { version = "0.1.0", path = "kcp2-core" }
+kcp2-std = { version = "0.1.0", path = "kcp2-std" }
 
 clap_lex = { version = "=1.0.1" }
 rayon-core = { version = "=1.12.1" }

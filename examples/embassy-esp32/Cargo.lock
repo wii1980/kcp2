@@ -1110,14 +1110,14 @@ dependencies = [
 
 [[package]]
 name = "kcp2-core"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "log",
 ]
 
 [[package]]
 name = "kcp2-embassy"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "embassy-futures",
  "embassy-net",
