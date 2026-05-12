@@ -600,16 +600,11 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
             self.parse_una(seg.una);
 
             if self.is_fresh {
+                // is_fresh 在 handle_reconnect 中已被清除，
+                // 通用 input 路径不应对 snd_nxt/snd_una/rcv_nxt 做修改，
+                // 否则当本地已发送数据时（snd_buf 非空），重置 snd_nxt 会导致
+                // flush 中 snd_buf.last().sn >= snd_nxt 的断言失败。
                 self.is_fresh = false;
-                self.snd_nxt = seg.una;
-                self.snd_una = seg.una;
-                self.rcv_nxt = seg.sn;
-                log::warn!(
-                    "new connection sn aligned: conv={}, snd_nxt={}, rcv_nxt={}",
-                    self.conv,
-                    self.snd_nxt,
-                    self.rcv_nxt
-                );
             }
 
             self.snd_una = self

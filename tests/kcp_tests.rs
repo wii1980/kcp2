@@ -716,3 +716,254 @@ fn test_kcp_send_bytes_stream_mode() {
 
     assert!(kcp.wait_snd() > 0);
 }
+
+// ─── CMD_RECONNECT 重连测试 ─────────────────────────────────
+
+/// 设置快速模式（nodelay + nc），用于测试
+fn set_fast_mode(kcp: &mut Kcp<impl Fn(&[u8])>) {
+    kcp.set_nodelay(true, 10, 2, true);
+    kcp.set_wndsize(512, 512);
+}
+
+/// 反复路由所有待处理包直到两端稳定，确保数据送达对端
+fn drain_loop(
+    kcp1: &mut Kcp<impl Fn(&[u8])>,
+    kcp2: &mut Kcp<impl Fn(&[u8])>,
+    ch1: &LoopbackChannel,
+    ch2: &LoopbackChannel,
+    start_time: u32,
+) {
+    for round in 0..100 {
+        let current = start_time + round * 5;
+
+        for pkt in ch2.drain() {
+            let _ = kcp2.input(&pkt);
+        }
+        for pkt in ch1.drain() {
+            let _ = kcp1.input(&pkt);
+        }
+        kcp1.update(current);
+        kcp1.flush();
+        kcp2.update(current);
+        kcp2.flush();
+
+        // 没有待处理包 + 两端都无未发送数据 → 稳定了
+        if ch1.packets.borrow().is_empty()
+            && ch2.packets.borrow().is_empty()
+            && kcp1.wait_snd() == 0
+            && kcp2.wait_snd() == 0
+            && round > 2
+        {
+            break;
+        }
+    }
+}
+
+/// 全新连接上发送 CMD_RECONNECT —— 应为无操作，仅记录 rmt_wnd
+#[test]
+fn test_reconnect_fresh() {
+    let (mut kcp1, mut kcp2, ch1, ch2) = create_loopback_pair(0x1234_5678);
+    set_fast_mode(&mut kcp1);
+    set_fast_mode(&mut kcp2);
+
+    // kcp2 发送 CMD_RECONNECT，模拟客户端重连
+    kcp2.send_reconnect().unwrap();
+    // 路由 CMD_RECONNECT 给 kcp1
+    drain_loop(&mut kcp1, &mut kcp2, &ch1, &ch2, 0);
+
+    // 重连后应能正常通信
+    kcp1.send(b"hello after reconnect").unwrap();
+    drain_loop(&mut kcp1, &mut kcp2, &ch1, &ch2, 10);
+
+    let mut buf = vec![0u8; 1024];
+    let n = kcp2.recv(&mut buf).unwrap();
+    assert_eq!(&buf[..n], b"hello after reconnect");
+}
+
+/// CMD_RECONNECT 应清空发送端的 snd_buf/snd_queue
+#[test]
+fn test_reconnect_clears_send_state() {
+    let (mut kcp1, mut kcp2, ch1, ch2) = create_loopback_pair(0x1234_5678);
+    set_fast_mode(&mut kcp1);
+    set_fast_mode(&mut kcp2);
+
+    // kcp1 模拟服务端，已发送大量数据（snd_nxt 前进，snd_buf 有数据）
+    for i in 0..100 {
+        let msg = format!("data-{:03}", i);
+        kcp1.send(msg.as_bytes()).unwrap();
+    }
+    kcp1.update(0);
+    kcp1.flush();
+
+    // 确认 kcp1 有未确认数据
+    assert!(kcp1.wait_snd() > 0);
+
+    // kcp2 发送 CMD_RECONNECT，模拟客户端重连
+    kcp2.send_reconnect().unwrap();
+
+    // 路由 CMD_RECONNECT 到 kcp1
+    drain_loop(&mut kcp1, &mut kcp2, &ch1, &ch2, 10);
+
+    // kcp1 收到 CMD_RECONNECT 后应清空所有缓冲
+    assert_eq!(kcp1.wait_snd(), 0, "snd_buf/snd_queue should be cleared after reconnect");
+}
+
+/// CMD_RECONNECT 应清空接收端的 rcv_queue/rcv_buf
+#[test]
+fn test_reconnect_clears_recv_state() {
+    let (mut kcp1, mut kcp2, ch1, ch2) = create_loopback_pair(0x1234_5678);
+    set_fast_mode(&mut kcp1);
+    set_fast_mode(&mut kcp2);
+
+    // kcp1 发送数据给 kcp2
+    kcp1.send(b"data before reconnect").unwrap();
+    drain_loop(&mut kcp1, &mut kcp2, &ch1, &ch2, 0);
+
+    // kcp2 应该收到数据
+    let mut buf = vec![0u8; 1024];
+    let n = kcp2.recv(&mut buf).unwrap();
+    assert_eq!(&buf[..n], b"data before reconnect");
+
+    // kcp1 再发一批数据，让 kcp2 的 rcv_queue 有数据
+    kcp1.send(b"pending data 1").unwrap();
+    kcp1.send(b"pending data 2").unwrap();
+    drain_loop(&mut kcp1, &mut kcp2, &ch1, &ch2, 10);
+
+    // 数据已到达 kcp2，但尚未 recv（在 rcv_queue 中）
+    assert!(kcp2.peek_size().is_ok(), "kcp2 should have data in rcv_queue");
+
+    // kcp1 发 CMD_RECONNECT → kcp2 收到，清空接收缓冲
+    kcp1.send_reconnect().unwrap();
+    drain_loop(&mut kcp1, &mut kcp2, &ch1, &ch2, 20);
+
+    // 重连后 kcp2 的接收队列应被清空
+    let result = kcp2.recv(&mut buf);
+    assert!(matches!(result, Err(KcpError::RecvQueueEmpty)),
+        "rcv_queue should be cleared after reconnect");
+}
+
+/// 重连后应能继续正常收发数据
+///
+/// CMD_RECONNECT 只重置接收方状态，因此需要两端互发来实现双向同步，
+/// 模拟真实场景：客户端重建连接后，服务端重置状态并通过响应使客户端也同步。
+#[test]
+fn test_reconnect_then_communicate() {
+    let (mut kcp1, mut kcp2, ch1, ch2) = create_loopback_pair(0x1234_5678);
+    set_fast_mode(&mut kcp1);
+    set_fast_mode(&mut kcp2);
+
+    // 先发一批数据，建立状态
+    for i in 0..5 {
+        kcp1.send(format!("pre-{}", i).as_bytes()).unwrap();
+    }
+    drain_loop(&mut kcp1, &mut kcp2, &ch1, &ch2, 0);
+    // kcp2 收掉所有旧数据
+    let mut buf = vec![0u8; 1024];
+    loop {
+        match kcp2.recv(&mut buf) {
+            Ok(n) if n > 0 => continue,
+            _ => break,
+        }
+    }
+
+    // 双向同步：kcp2 发 CMD_RECONNECT → kcp1 重置
+    kcp2.send_reconnect().unwrap();
+    // kcp1 也发 CMD_RECONNECT → kcp2 重置，使序列号对齐
+    kcp1.send_reconnect().unwrap();
+    drain_loop(&mut kcp1, &mut kcp2, &ch1, &ch2, 10);
+
+    // 双方状态已清空，收发新数据
+    kcp1.send(b"new data after reconnect").unwrap();
+    drain_loop(&mut kcp1, &mut kcp2, &ch1, &ch2, 20);
+
+    let n = kcp2.recv(&mut buf).unwrap();
+    assert_eq!(&buf[..n], b"new data after reconnect",
+        "should be able to communicate after reconnect");
+}
+
+/// 两次 CMD_RECONNECT 连续发送（双向同步）
+#[test]
+fn test_reconnect_double() {
+    let (mut kcp1, mut kcp2, ch1, ch2) = create_loopback_pair(0x1234_5678);
+    set_fast_mode(&mut kcp1);
+    set_fast_mode(&mut kcp2);
+
+    // 第一次重连：双向同步
+    kcp2.send_reconnect().unwrap();
+    kcp1.send_reconnect().unwrap();
+    drain_loop(&mut kcp1, &mut kcp2, &ch1, &ch2, 0);
+
+    // 发点数据
+    kcp1.send(b"after first reconnect").unwrap();
+    drain_loop(&mut kcp1, &mut kcp2, &ch1, &ch2, 10);
+    let mut buf = vec![0u8; 1024];
+    let n = kcp2.recv(&mut buf).unwrap();
+    assert_eq!(&buf[..n], b"after first reconnect");
+
+    // 第二次重连：双向同步
+    kcp2.send_reconnect().unwrap();
+    kcp1.send_reconnect().unwrap();
+    drain_loop(&mut kcp1, &mut kcp2, &ch1, &ch2, 20);
+
+    // 再次通信
+    kcp1.send(b"after second reconnect").unwrap();
+    drain_loop(&mut kcp1, &mut kcp2, &ch1, &ch2, 30);
+
+    let n = kcp2.recv(&mut buf).unwrap();
+    assert_eq!(&buf[..n], b"after second reconnect");
+}
+
+/// 普通首包（非 CMD_RECONNECT）不应重置 snd_nxt —— is_fresh fix 的回归测试
+///
+/// 这是 network_sim mode 1 (nc=true) 中触发的 bug：
+/// kcp1 已发送数据（snd_nxt > 0, snd_buf 非空），
+/// 收到 kcp2 的普通包作为首包时，is_fresh 错误地重置了 snd_nxt = seg.una，
+/// 导致 flush 中断言失败。
+#[test]
+fn test_first_input_does_not_reset_snd_nxt() {
+    let (mut kcp1, mut kcp2, ch1, ch2) = create_loopback_pair(0x1122_3344);
+
+    // kcp1 先发数据，使 snd_nxt > 0，snd_buf 非空
+    kcp1.send(b"packet-1").unwrap();
+    kcp1.send(b"packet-2").unwrap();
+    kcp1.send(b"packet-3").unwrap();
+    kcp1.update(0);
+    kcp1.flush();
+    // kcp1.snd_nxt 现在 > 0，snd_buf 有数据
+
+    // 手动构造一个普通 CMD_PUSH 包给 kcp1 作为首包输入
+    // 方法：让 kcp2 发送数据作为回包，路由给 kcp1
+    // 先把 kcp1 的输出喂给 kcp2，让 kcp2 产生 ACK/echo
+    for pkt in ch2.drain() {
+        let _ = kcp2.input(&pkt);
+    }
+    // kcp2 收到数据后会产生 ACK
+    kcp2.update(10);
+    kcp2.flush();
+
+    // 现在 kcp2 的输出中有 ACK 包，路由回 kcp1
+    // 这是 kcp1 的 FIRST input → 会触发 is_fresh 路径
+    // 之前 bug：is_fresh 重置 snd_nxt，导致后续 flush assertion 失败
+    for pkt in ch1.drain() {
+        let _ = kcp1.input(&pkt);
+    }
+
+    // fix 验证：flush 不应 panic（assertion 应通过）
+    kcp1.update(20);
+    kcp1.flush(); // 之前这里会 panic: snd_buf.last().sn >= snd_nxt
+
+    // 并且 kcp1 状态应正常，可以继续收发
+    kcp1.send(b"after first input").unwrap();
+    kcp1.update(30);
+    kcp1.flush();
+
+    for pkt in ch2.drain() {
+        let _ = kcp2.input(&pkt);
+    }
+    kcp2.update(40);
+    kcp2.flush();
+
+    let mut buf = vec![0u8; 1024];
+    let n = kcp2.recv(&mut buf).unwrap();
+    assert_eq!(&buf[..n], b"packet-1", "kcp2 should receive first packet");
+}
