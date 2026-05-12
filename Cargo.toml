@@ -31,7 +31,7 @@ pedantic = "warn"
 # kcp2 兼容层（重新导出 kcp2-std）
 [package]
 name = "kcp2"
-version = "0.2.0"
+version = "0.2.1"
 edition.workspace = true
 exclude = ["publish.sh", "qa.sh", "scripts/", "ESP32_PORTING_GUIDE.md"]
 rust-version.workspace = true
@@ -50,7 +50,7 @@ aead = ["kcp2-std/aead"]
 dtls = ["kcp2-std/dtls"]
 
 [dependencies]
-kcp2-std = { version = "0.1.0", path = "kcp2-std" }
+kcp2-std = { version = "0.1.2", path = "kcp2-std" }
 
 # 原始 benchmark 依赖
 [dev-dependencies]
@@ -58,8 +58,8 @@ rand = "0.8"
 criterion = { version = "0.5", features = ["html_reports"] }
 tokio = { version = "1", features = ["full"] }
 once_cell = "1"
-kcp2-core = { version = "0.1.0", path = "kcp2-core" }
-kcp2-std = { version = "0.1.0", path = "kcp2-std" }
+kcp2-core = { version = "0.1.2", path = "kcp2-core" }
+kcp2-std = { version = "0.1.2", path = "kcp2-std" }
 
 clap_lex = { version = "=1.0.1" }
 rayon-core = { version = "=1.12.1" }

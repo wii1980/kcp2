@@ -1,6 +1,6 @@
 [package]
 name = "kcp2-std"
-version = "0.1.0"
+version = "0.1.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -17,7 +17,7 @@ aead = ["dep:aes-gcm", "dep:chacha20poly1305", "dep:getrandom"]
 dtls = ["dep:webrtc-dtls", "dep:webrtc-util", "dep:base64ct", "dep:time"]
 
 [dependencies]
-kcp2-core = { version = "0.1.0", path = "../kcp2-core", features = ["std", "bytes"] }
+kcp2-core = { version = "0.1.2", path = "../kcp2-core", features = ["std", "bytes"] }
 tokio = { version = "1", features = ["full"] }
 bytes = "1"
 log = "0.4"
