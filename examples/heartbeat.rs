@@ -1,15 +1,15 @@
 //! KCP 心跳、消息接收和断开重连示例（支持 AEAD / DTLS 加密）
 //!
 //! 明文模式（默认）:
-//!   先启动服务器: cargo run --example multi_server -- server
+//!   先启动服务器: cargo run --example `multi_server` -- server
 //!   再启动客户端: cargo run --example heartbeat
 //!
 //! AEAD 加密模式（需启用 aead feature）:
-//!   先启动服务器: cargo run --example multi_server --features aead -- aead-server [aes|chacha]
+//!   先启动服务器: cargo run --example `multi_server` --features aead -- aead-server [aes|chacha]
 //!   再启动客户端: cargo run --example heartbeat --features aead -- aead [aes|chacha]
 //!
 //! DTLS 加密模式（需启用 dtls feature）:
-//!   先启动服务器: cargo run --example multi_server --features dtls -- dtls-server
+//!   先启动服务器: cargo run --example `multi_server` --features dtls -- dtls-server
 //!   再启动客户端: cargo run --example heartbeat --features dtls -- dtls
 
 use kcp2::{KcpConfig, KcpConnector, KcpSession};
@@ -223,7 +223,7 @@ async fn run_with_reconnect(connect_fn: ConnectFn, mode_label: &str) {
 
         let jitter = rand::random::<u64>() % backoff_secs.max(1);
         let delay = backoff_secs + jitter;
-        eprintln!("[{mode_label}] {}s 后重连...", delay);
+        eprintln!("[{mode_label}] {delay}s 后重连...");
         tokio::time::sleep(Duration::from_secs(delay)).await;
         backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF.as_secs());
     }
@@ -264,7 +264,7 @@ fn print_help() {
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    match args.get(1).map(|s| s.as_str()) {
+    match args.get(1).map(std::string::String::as_str) {
         // 明文模式（默认）
         None => {
             let server_addr = std::env::var("KCP_SERVER_ADDR")

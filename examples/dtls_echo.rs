@@ -1,10 +1,10 @@
 //! KCP over DTLS Echo 示例（PSK 模式）
 //!
 //! 启动服务端：
-//!   cargo run --example dtls_echo --features dtls -- server
+//!   cargo run --example `dtls_echo` --features dtls -- server
 //!
 //! 启动客户端：
-//!   cargo run --example dtls_echo --features dtls -- client
+//!   cargo run --example `dtls_echo` --features dtls -- client
 //!
 //! 双方使用相同的 PSK 完成 DTLS 1.2 握手，KCP 数据流在已加密通道之上传输。
 //! 与原生 KCP 不互通；与 `kcp_echo` / `high_level_api` 示例对照可对比加密前后差异。

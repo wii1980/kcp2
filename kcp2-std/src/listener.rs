@@ -43,16 +43,16 @@ impl KcpListener {
 
     /// 使用自定义传输层创建 Listener
     pub fn from_transport(transport: Arc<dyn KcpTransport>, config: KcpConfig) -> io::Result<Self> {
-        Self::new(transport, config)
+        Ok(Self::new(transport, config))
     }
 
     /// 使用 UdpSocket 创建 Listener（向后兼容）
     pub fn from_socket(socket: UdpSocket, config: KcpConfig) -> io::Result<Self> {
         let transport = Arc::new(UdpTransport::new(socket));
-        Self::new(transport, config)
+        Ok(Self::new(transport, config))
     }
 
-    fn new(transport: Arc<dyn KcpTransport>, config: KcpConfig) -> io::Result<Self> {
+    fn new(transport: Arc<dyn KcpTransport>, config: KcpConfig) -> Self {
         let connections: Arc<DashMap<u32, Arc<KcpConnection>>> = Arc::new(DashMap::with_shard_amount(16));
         let next_conv = Arc::new(parking_lot::Mutex::new(1));
         let closed = Arc::new(Notify::new());
@@ -78,7 +78,7 @@ impl KcpListener {
 
         let buf_pool = Arc::new(BufferPool::new(BUF_POOL_CAPACITY, RECV_BUF_SIZE));
 
-        Ok(Self {
+        Self {
             transport,
             connections,
             config,
@@ -87,7 +87,7 @@ impl KcpListener {
             buf_pool,
             cleanup_task,
             closed,
-        })
+        }
     }
 
     pub fn allocate_conv(&self) -> u32 {

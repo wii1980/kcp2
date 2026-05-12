@@ -92,14 +92,12 @@ fn handle_callback_cmd<Output: KcpOutput + Send + 'static>(
 ) {
     match cmd {
         KcpCmd::Send { data, ack } => {
-            kcp.update(current());
             let r = kcp.send(&data);
             kcp.flush();
             drain_callback_output(collected, output);
             let _ = ack.send(r);
         }
         KcpCmd::SendBatch { data, ack } => {
-            kcp.update(current());
             let mut total_sent = 0usize;
             for item in &data {
                 match kcp.send(item) {
@@ -144,7 +142,6 @@ fn handle_callback_cmd<Output: KcpOutput + Send + 'static>(
             }
         }
         KcpCmd::SendWithHandle { data, ack } => {
-            kcp.update(current());
             let r = kcp.send_with_handle(&data);
             kcp.flush();
             drain_callback_output(collected, output);

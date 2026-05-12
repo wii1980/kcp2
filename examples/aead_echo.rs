@@ -1,10 +1,10 @@
 //! KCP AEAD Echo 示例（AES-256-GCM / ChaCha20-Poly1305 整包加密）
 //!
 //! 启动服务端：
-//!   cargo run --example aead_echo --features aead -- server
+//!   cargo run --example `aead_echo` --features aead -- server
 //!
 //! 启动客户端：
-//!   cargo run --example aead_echo --features aead -- client
+//!   cargo run --example `aead_echo` --features aead -- client
 //!
 //! 双方使用相同的预共享密钥，KCP 数据包通过 AEAD 整包加密，
 //! 无需握手，overhead 仅 32 字节/包。与原生 KCP 不互通。

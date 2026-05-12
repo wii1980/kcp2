@@ -75,6 +75,7 @@ impl LatencySimulator {
 // ---------------------------------------------------------------------------
 // 时钟
 // ---------------------------------------------------------------------------
+#[allow(clippy::cast_possible_truncation)]
 fn now_ms() -> u32 {
     static START: Lazy<Instant> = Lazy::new(Instant::now);
     START.elapsed().as_millis() as u32
@@ -170,18 +171,18 @@ fn test(mode: u32) {
                     let ts = u32::from_le_bytes(buf[4..8].try_into().unwrap());
                     let rtt = current.wrapping_sub(ts);
                     if sn != next {
-                        println!("ERROR sn mismatch: count={}, next={}, actual_sn={}, rtt={}, ts={}, current={}", count, next, sn, rtt, ts, current);
+                        println!("ERROR sn mismatch: count={count}, next={next}, actual_sn={sn}, rtt={rtt}, ts={ts}, current={current}");
                         println!("  buf bytes: {:02x?}", &buf[..n]);
                         return;
                     }
                     next += 1;
-                    sum_rtt += rtt as u64;
+                    sum_rtt += u64::from(rtt);
                     count += 1;
                     if rtt > max_rtt {
                         max_rtt = rtt;
                     }
                     if count <= 5 || count % 100 == 0 {
-                        println!("[RECV] mode={} sn={} rtt={}", mode, sn, rtt);
+                        println!("[RECV] mode={mode} sn={sn} rtt={rtt}");
                     }
                 }
                 _ => break,
@@ -194,11 +195,11 @@ fn test(mode: u32) {
     }
 
     let total_ms = start.elapsed().as_millis();
-    let avg_rtt = if count > 0 { sum_rtt / count as u64 } else { 0 };
+    let avg_rtt = if count > 0 { sum_rtt / u64::from(count) } else { 0 };
     let tx1 = sim.borrow().tx1;
 
     println!("\n{} mode result ({}ms):", mode_names[mode as usize], total_ms);
-    println!("avgrtt={} maxrtt={} tx={}", avg_rtt, max_rtt, tx1);
+    println!("avgrtt={avg_rtt} maxrtt={max_rtt} tx={tx1}");
 }
 
 // ---------------------------------------------------------------------------

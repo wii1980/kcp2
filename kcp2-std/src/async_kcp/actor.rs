@@ -133,14 +133,13 @@ impl KcpActor {
     fn handle_cmd(&mut self, cmd: KcpCmd) -> bool {
         match cmd {
             KcpCmd::Send { data, ack } => {
-                self.kcp.update(current());
+                // 先 send 入队，再 flush 发送。update 由 timer 驱动，避免重复 flush
                 let result = self.kcp.send(&data);
                 self.flush_and_drain();
                 let _ = ack.send(result);
             }
 
             KcpCmd::SendBatch { data, ack } => {
-                self.kcp.update(current());
                 let mut total_sent = 0usize;
                 for item in &data {
                     match self.kcp.send(item) {
@@ -198,7 +197,6 @@ impl KcpActor {
             }
 
             KcpCmd::SendWithHandle { data, ack } => {
-                self.kcp.update(current());
                 let result = self.kcp.send_with_handle(&data);
                 self.flush_and_drain();
                 let _ = ack.send(result);

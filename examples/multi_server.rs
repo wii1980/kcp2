@@ -1,19 +1,19 @@
 //! 多连接 KCP over UDP 示例（支持 AEAD / DTLS 加密）
 //!
 //! 明文模式（默认）:
-//!   cargo run --example multi_server -- server
-//!   cargo run --example multi_server -- client
-//!   cargo run --example multi_server -- multi
+//!   cargo run --example `multi_server` -- server
+//!   cargo run --example `multi_server` -- client
+//!   cargo run --example `multi_server` -- multi
 //!
 //! AEAD 加密模式（需启用 aead feature）:
-//!   cargo run --example multi_server --features aead -- aead-server [aes|chacha]
-//!   cargo run --example multi_server --features aead -- aead-client [aes|chacha]
-//!   cargo run --example multi_server --features aead -- aead-multi [aes|chacha]
+//!   cargo run --example `multi_server` --features aead -- aead-server [aes|chacha]
+//!   cargo run --example `multi_server` --features aead -- aead-client [aes|chacha]
+//!   cargo run --example `multi_server` --features aead -- aead-multi [aes|chacha]
 //!
 //! DTLS 加密模式（需启用 dtls feature）:
-//!   cargo run --example multi_server --features dtls -- dtls-server
-//!   cargo run --example multi_server --features dtls -- dtls-client
-//!   cargo run --example multi_server --features dtls -- dtls-multi
+//!   cargo run --example `multi_server` --features dtls -- dtls-server
+//!   cargo run --example `multi_server` --features dtls -- dtls-client
+//!   cargo run --example `multi_server` --features dtls -- dtls-multi
 
 use kcp2::{KcpConfig, KcpConnector, KcpListener};
 use std::sync::Arc;
@@ -674,7 +674,7 @@ fn print_help() {
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    match args.get(1).map(|s| s.as_str()) {
+    match args.get(1).map(std::string::String::as_str) {
         // 明文模式
         Some("server") => run_server().await,
         Some("client") => run_client().await,

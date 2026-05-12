@@ -711,6 +711,8 @@ impl<Output: KcpOutput> Kcp<Output> {
     }
 
     #[allow(unused_assignments)]
+    /// 不推荐直接调用。请使用 `update()`，内部会自动在合适的时机执行 flush。
+    #[doc(hidden)]
     pub fn flush(&mut self) {
         if !self.updated {
             return;
