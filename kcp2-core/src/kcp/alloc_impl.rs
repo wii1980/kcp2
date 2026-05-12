@@ -267,7 +267,7 @@ impl<Output: KcpOutput> Kcp<Output> {
 
     fn peek_size_internal(&self) -> Result<usize> {
         if self.rcv_queue.is_empty() {
-            log::debug!("peek_size_internal: recv queue empty");
+            log::trace!("peek_size_internal: recv queue empty");
             return Err(KcpError::RecvQueueEmpty);
         }
         let seg = &self.rcv_queue[0];
@@ -275,7 +275,7 @@ impl<Output: KcpOutput> Kcp<Output> {
             return Ok(seg.data.len());
         }
         if self.rcv_queue.len() < (seg.frg + 1) as usize {
-            log::debug!(
+            log::trace!(
                 "peek_size_internal: incomplete packet, have {} fragments, need {}",
                 self.rcv_queue.len(),
                 seg.frg + 1
@@ -512,7 +512,7 @@ impl<Output: KcpOutput> Kcp<Output> {
         if time_diff(sn, self.snd_una) < 0 || time_diff(sn, self.snd_nxt) >= 0 {
             return;
         }
-        log::debug!("ack sn={}, una={}", sn, self.snd_una);
+        log::trace!("ack sn={}, una={}", sn, self.snd_una);
         if let Ok(idx) = self.snd_buf.binary_search_by_key(&sn, |(k, _)| *k) {
             let (_, seg) = self.snd_buf.remove(idx);
             self.release_segment(seg);
@@ -523,7 +523,7 @@ impl<Output: KcpOutput> Kcp<Output> {
         if time_diff(sn, self.snd_una) < 0 || time_diff(sn, self.snd_nxt) >= 0 {
             return;
         }
-        log::debug!("fastack sn={}, ts={}", sn, ts);
+        log::trace!("fastack sn={}, ts={}", sn, ts);
         for (entry_sn, seg) in &mut self.snd_buf {
             if time_diff(sn, *entry_sn) < 0 {
                 break;
@@ -554,7 +554,7 @@ impl<Output: KcpOutput> Kcp<Output> {
             return;
         }
 
-        log::debug!(
+        log::trace!(
             "data sn={}, frg={}, expect={}",
             sn,
             new_seg.frg,

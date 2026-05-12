@@ -262,7 +262,7 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
 
     fn peek_size_internal(&self) -> Result<usize> {
         if self.rcv_queue.is_empty() {
-            log::debug!("peek_size_internal: recv queue empty");
+            log::trace!("peek_size_internal: recv queue empty");
             return Err(KcpError::RecvQueueEmpty);
         }
         let seg = &self.rcv_queue[0];
@@ -270,7 +270,7 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
             return Ok(seg.data.len());
         }
         if self.rcv_queue.len() < (seg.frg + 1) as usize {
-            log::debug!(
+            log::trace!(
                 "peek_size_internal: incomplete packet, have {} fragments, need {}",
                 self.rcv_queue.len(),
                 seg.frg + 1
@@ -486,7 +486,7 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
         if time_diff(sn, self.snd_una) < 0 || time_diff(sn, self.snd_nxt) >= 0 {
             return;
         }
-        log::debug!("ack sn={}, una={}", sn, self.snd_una);
+        log::trace!("ack sn={}, una={}", sn, self.snd_una);
         if let Some(pos) = self.snd_buf.iter().position(|(s, _)| *s == sn) {
             self.snd_buf.remove(pos);
         }
@@ -496,7 +496,7 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
         if time_diff(sn, self.snd_una) < 0 || time_diff(sn, self.snd_nxt) >= 0 {
             return;
         }
-        log::debug!("fastack sn={}, ts={}", sn, ts);
+        log::trace!("fastack sn={}, ts={}", sn, ts);
         for (_, seg) in self.snd_buf.iter_mut() {
             if time_diff(sn, seg.sn) < 0 {
                 break;
@@ -527,7 +527,7 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
             return;
         }
 
-        log::debug!(
+        log::trace!(
             "data sn={}, frg={}, expect={}",
             sn,
             new_seg.frg,
