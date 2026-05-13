@@ -101,15 +101,19 @@ mod aead_impl {
     impl EmbKcpCrypto for Aes256GcmCrypto {
         fn encrypt(&self, conv: u32, plaintext: &[u8]) -> Vec<u8> {
             let counter = self.nonce_counter.get();
-            self.nonce_counter.set(counter + 1);
+            let next = counter.wrapping_add(1);
+            if next == 0 {
+                log::error!("AES-256-GCM nonce counter overflow! Key may be compromised.");
+            }
+            self.nonce_counter.set(next);
             let mut nonce_bytes = [0u8; NONCE_SIZE];
             nonce_bytes[..8].copy_from_slice(&counter.to_le_bytes());
             let nonce = Nonce::from_slice(&nonce_bytes);
 
-            let mut ciphertext = self
-                .cipher
-                .encrypt(nonce, plaintext)
-                .expect("AES-256-GCM encryption should not fail");
+            let ciphertext = self.cipher.encrypt(nonce, plaintext).unwrap_or_else(|e| {
+                log::error!("AES-256-GCM encrypt failed: {:?}", e);
+                panic!("AES-256-GCM encryption failure");
+            });
 
             debug_assert!(ciphertext.len() == plaintext.len() + TAG_SIZE);
 
@@ -169,15 +173,19 @@ mod aead_impl {
     impl EmbKcpCrypto for ChaCha20Poly1305Crypto {
         fn encrypt(&self, conv: u32, plaintext: &[u8]) -> Vec<u8> {
             let counter = self.nonce_counter.get();
-            self.nonce_counter.set(counter + 1);
+            let next = counter.wrapping_add(1);
+            if next == 0 {
+                log::error!("ChaCha20-Poly1305 nonce counter overflow! Key may be compromised.");
+            }
+            self.nonce_counter.set(next);
             let mut nonce_bytes = [0u8; NONCE_SIZE];
             nonce_bytes[..8].copy_from_slice(&counter.to_le_bytes());
             let nonce = chacha20poly1305::Nonce::from_slice(&nonce_bytes);
 
-            let mut ciphertext = self
-                .cipher
-                .encrypt(nonce, plaintext)
-                .expect("ChaCha20-Poly1305 encryption should not fail");
+            let ciphertext = self.cipher.encrypt(nonce, plaintext).unwrap_or_else(|e| {
+                log::error!("ChaCha20-Poly1305 encrypt failed: {:?}", e);
+                panic!("ChaCha20-Poly1305 encryption failure");
+            });
 
             let mut packet = Vec::with_capacity(CONV_SIZE + NONCE_SIZE + ciphertext.len());
             packet.extend_from_slice(&conv.to_le_bytes());

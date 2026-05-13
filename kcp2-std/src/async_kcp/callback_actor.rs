@@ -71,9 +71,7 @@ pub(super) async fn run_callback_actor<Output: KcpOutput + Send + 'static>(
             }
 
             _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() {
-                    break;
-                }
+                break;
             }
         }
     }
@@ -125,6 +123,9 @@ fn handle_callback_cmd<Output: KcpOutput + Send + 'static>(
         }
         KcpCmd::Recv { ack } => {
             kcp.update(current());
+            if ack.is_closed() {
+                return;
+            }
             if let Some(r) = try_recv_inner_fn(kcp, recv_tmp) {
                 kcp.flush();
                 drain_callback_output(collected, output);
@@ -242,6 +243,9 @@ fn try_wake_recv_inner(
     pending_recv: &mut Option<oneshot::Sender<Result<BytesMut>>>,
 ) {
     if let Some(ack) = pending_recv.take() {
+        if ack.is_closed() {
+            return;
+        }
         if let Some(r) = try_recv_inner_fn(kcp, recv_tmp) {
             let _ = ack.send(r);
         } else {

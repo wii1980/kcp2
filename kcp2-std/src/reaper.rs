@@ -3,7 +3,8 @@ use std::collections::BinaryHeap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dashmap::{DashMap, DashSet};
+use std::collections::HashSet;
+use dashmap::DashMap;
 use parking_lot::Mutex;
 
 use crate::connection::KcpConnection;
@@ -54,7 +55,7 @@ impl ConnectionReaper {
             return;
         }
 
-        let removed_set: DashSet<u32> = removed.drain(..).collect();
+        let removed_set: HashSet<u32> = removed.drain(..).collect();
 
         let old_len = heap.len();
         let mut new_heap = BinaryHeap::with_capacity(old_len / 2);

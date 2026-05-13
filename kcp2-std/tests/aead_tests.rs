@@ -19,10 +19,9 @@ fn find_free_addr() -> String {
 #[tokio::test]
 async fn test_crypto_echo() {
     let server_key = Aes256GcmCrypto::generate_key();
-    let client_key = Aes256GcmCrypto::generate_key();
 
     let server_crypto = Arc::new(Aes256GcmCrypto::new(&server_key));
-    let client_crypto = Arc::new(Aes256GcmCrypto::new(&client_key));
+    let client_crypto = Arc::new(Aes256GcmCrypto::new(&server_key));
 
     // 服务端
     let server_addr = find_free_addr();
@@ -99,7 +98,7 @@ async fn test_crypto_key_mismatch() {
     conn.send(b"should not be readable").await.unwrap();
 
     // 等待超时（密钥不匹配，数据无法正确解密）
-    tokio::time::sleep(Duration::from_millis(1000)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 }
 
 /// 验证加密后 wire 数据与明文不同

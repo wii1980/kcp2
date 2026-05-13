@@ -28,7 +28,7 @@ async fn test_kcp_over_dtls_echo() {
     let server_addr = find_free_addr();
     let psk = b"shared-test-secret".to_vec();
 
-    let server_dtls = DtlsConfig::server_psk(psk.clone(), "kcp2")
+    let server_dtls = DtlsConfig::server_psk(&psk, "kcp2")
         .handshake_timeout(Duration::from_secs(5));
     let server_transport = Arc::new(
         DtlsServerTransport::bind(&server_addr, server_dtls)
@@ -54,7 +54,7 @@ async fn test_kcp_over_dtls_echo() {
     });
 
     // 客户端
-    let client_dtls = DtlsConfig::client_psk(psk, "kcp2")
+    let client_dtls = DtlsConfig::client_psk(&psk, "kcp2")
         .handshake_timeout(Duration::from_secs(5));
     let client_transport = Arc::new(
         DtlsClientTransport::connect(&listener_addr.to_string(), client_dtls)
@@ -101,7 +101,7 @@ async fn test_kcp_over_dtls_multi_client() {
     let server_transport = Arc::new(
         DtlsServerTransport::bind(
             &server_addr,
-            DtlsConfig::server_psk(psk.clone(), "kcp2")
+            DtlsConfig::server_psk(&psk, "kcp2")
                 .handshake_timeout(Duration::from_secs(5)),
         )
         .await
@@ -139,7 +139,7 @@ async fn test_kcp_over_dtls_multi_client() {
             let client_transport = Arc::new(
                 DtlsClientTransport::connect(
                     &server_str,
-                    DtlsConfig::client_psk(client_psk, "kcp2")
+                    DtlsConfig::client_psk(&client_psk, "kcp2")
                         .handshake_timeout(Duration::from_secs(5)),
                 )
                 .await
@@ -185,7 +185,7 @@ async fn test_kcp_over_dtls_psk_mismatch() {
 
     let _server = DtlsServerTransport::bind(
         &server_addr,
-        DtlsConfig::server_psk(b"correct-secret".to_vec(), "kcp2")
+        DtlsConfig::server_psk(b"correct-secret", "kcp2")
             .handshake_timeout(Duration::from_secs(2)),
     )
     .await
@@ -193,7 +193,7 @@ async fn test_kcp_over_dtls_psk_mismatch() {
 
     let result = DtlsClientTransport::connect(
         &server_addr,
-        DtlsConfig::client_psk(b"wrong-secret".to_vec(), "kcp2")
+        DtlsConfig::client_psk(b"wrong-secret", "kcp2")
             .handshake_timeout(Duration::from_secs(3)),
     )
     .await;

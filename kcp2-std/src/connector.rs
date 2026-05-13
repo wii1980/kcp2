@@ -8,6 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use std::mem::ManuallyDrop;
+
 use tokio::net::UdpSocket;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -226,13 +228,14 @@ impl KcpConnector {
     ///
     /// 返回 `(Arc<KcpConnection>, JoinHandle<()>)` 保持向后兼容。
     /// Actor 自行管理 update 和 send，无需外部循环。
+    /// 调用者负责在结束时 abort recv_task 并调用 conn.close()。
     pub async fn connect_with_recv_task(&self) -> io::Result<(Arc<KcpConnection>, JoinHandle<()>)> {
         let (session, recv_task, timeout_task) = self.do_connect().await?;
         let conn = session.connection().clone();
-        // 仅返回 recv_task 句柄，终止 timeout_task
         timeout_task.abort();
-        // 阻止 Drop 终止 recv_task 和关闭连接
-        std::mem::forget(session);
+        // ManuallyDrop 阻止 Drop impl 运行（不会 abort recv_task / close conn），
+        // 但字段仍会正常 drop（Arc 减引用计数，AbortHandle 不 abort）
+        let _ = ManuallyDrop::new(session);
         Ok((conn, recv_task))
     }
 

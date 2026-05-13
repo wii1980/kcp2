@@ -44,15 +44,13 @@ impl KcpConfig {
 
     /// 启用 AES-256-GCM / ChaCha20-Poly1305 加密
     ///
-    /// MTU 会自动扣除加密 overhead（32 字节）以避免 IP 分片。
+    /// MTU 扣除由 `effective_mtu()` 统一处理，避免重复扣减。
     pub fn crypto(mut self, crypto: Arc<dyn KcpCrypto>) -> Self {
-        let overhead = crypto.overhead();
         self.crypto = Some(crypto);
-        self.mtu = self.mtu.saturating_sub(overhead);
         self
     }
 
-    /// 获取实际 KCP 层可用的 MTU（已扣除加密 overhead）
+    /// 获取实际 KCP 层可用的 MTU（自动扣除加密 overhead）
     pub fn effective_mtu(&self) -> usize {
         self.crypto
             .as_ref()

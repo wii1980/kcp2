@@ -613,6 +613,69 @@ KcpConfig::default()
     .dead_link(8)
 ```
 
+## 使用注意事项
+
+### Send 大小限制
+
+`send()` 会将数据拆分为 KCP 分段。每次调用的最大分段数受接收窗口（`WND_RCV`，默认 128）限制。当 `stream` 模式启用且数据量超过 `WND_RCV × MSS`（默认约 176KB）时，`send()` 返回 `Err(TooManyFragments)` 而非静默丢弃部分数据。
+
+```rust
+// 错误：超过大小时会 panic
+conn.send(&huge_data).await.unwrap();
+
+// 正确：显式处理错误
+match conn.send(&huge_data).await {
+    Ok(()) => { /* 已发送 */ }
+    Err(KcpError::TooManyFragments { .. }) => { /* 分片重试 */ }
+    Err(e) => return Err(e.into()),
+}
+```
+
+**建议**：传输大量数据时，在应用层将数据切分为远小于 `WND_RCV × MSS` 的块。
+
+### 接收缓冲区必须足够大
+
+`recv()` / `try_recv()` 在缓冲区不足时返回 `Err(BufferTooSmall { required, available })`。**数据不会被消费**——可用更大的缓冲区重试。
+
+```rust
+let mut buf = vec![0u8; 2048];
+loop {
+    match conn.recv(&mut buf).await {
+        Ok(n) => { /* 处理 &buf[..n] */ }
+        Err(KcpError::BufferTooSmall { required, .. }) => {
+            buf.resize(required, 0);
+            continue;  // 用更大的缓冲区重试
+        }
+        Err(e) => break,
+    }
+}
+```
+
+### 不要忽略错误返回值
+
+所有 I/O 方法（`send`、`recv`、`input`、`flush`）可能返回指示数据丢失或连接失败的错误。在非测试代码中用 `let _ =` 或 `.unwrap()` 忽略可能掩盖问题：
+
+```rust
+// 错误：静默丢弃发送失败
+let _ = session.send(b"important data");
+
+// 正确：处理或传播错误
+session.send(b"important data")?;
+// 或至少记录日志
+if let Err(e) = session.send(b"important data") {
+    log::error!("send failed: {e}");
+}
+```
+
+这对 `kcp2-embassy` 尤其重要——`step()` 方法内部驱动 `input()` 和 `flush()`，确保 `log` 后端已初始化以捕获警告。
+
+### Stream 模式边界行为
+
+启用 `stream` 模式（`KcpConfig::stream(true)`）后，KCP 会将连续的 `send()` 调用合并到共享分段以提高效率。这意味着：
+
+- 消息边界**不保留**——两次 100 字节 send 可能到达为一次 200 字节 recv，或以不同方式拆分。
+- 如需消息帧边界，请在应用层实现（如长度前缀协议）。
+
 ## 错误类型
 
 | 变体 | 说明 |
@@ -624,6 +687,7 @@ KcpConfig::default()
 | `DeadLink` | 连接已死 |
 | `Timeout` | 操作超时 |
 | `BufferTooSmall` | 缓冲区不足 |
+| `TooManyFragments` | 数据过大，超出单次 send 上限（`WND_RCV × MSS`） |
 
 ## 示例
 

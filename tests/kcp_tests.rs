@@ -558,13 +558,26 @@ fn test_kcp_buffer_too_small() {
     let output = |_: &[u8]| {};
     let mut kcp = Kcp::new(0x1234_5678, output);
 
-    kcp.send(b"test message").unwrap();
+    // Build a minimal KCP CMD_PUSH segment to inject into rcv_queue.
+    // Segment format: conv(4) cmd(1) frg(1) wnd(2) ts(4) sn(4) una(4) len(4) data(N)
+    let data = b"test message";
+    let overhead: usize = 24;
+    let cmd_push: u8 = 81;
+    let mut seg = vec![0u8; overhead + data.len()];
+    seg[0..4].copy_from_slice(&0x1234_5678u32.to_le_bytes()); // conv
+    seg[4] = cmd_push;   // cmd = CMD_PUSH
+    seg[5] = 0;          // frg = 0 (last)
+    seg[6..8].copy_from_slice(&128u16.to_le_bytes()); // wnd
+    seg[12..16].copy_from_slice(&0u32.to_le_bytes()); // sn = 0
+    seg[20..24].copy_from_slice(&(data.len() as u32).to_le_bytes()); // len
+    seg[24..].copy_from_slice(data);
+
+    kcp.input(&seg).unwrap();
     kcp.update(0);
-    kcp.flush();
 
     let mut small_buf = vec![0u8; 2];
     let result = kcp.recv(&mut small_buf);
-    assert!(matches!(result, Err(KcpError::RecvQueueEmpty)));
+    assert!(matches!(result, Err(KcpError::BufferTooSmall { .. })));
 }
 
 #[test]
@@ -759,7 +772,7 @@ fn drain_loop(
     }
 }
 
-/// 全新连接上发送 CMD_RECONNECT —— 应为无操作，仅记录 rmt_wnd
+/// 全新连接上发送 `CMD_RECONNECT` —— 应为无操作，仅记录 `rmt_wnd`
 #[test]
 fn test_reconnect_fresh() {
     let (mut kcp1, mut kcp2, ch1, ch2) = create_loopback_pair(0x1234_5678);
@@ -780,7 +793,7 @@ fn test_reconnect_fresh() {
     assert_eq!(&buf[..n], b"hello after reconnect");
 }
 
-/// CMD_RECONNECT 应清空发送端的 snd_buf/snd_queue
+/// `CMD_RECONNECT` 应清空发送端的 `snd_buf`/`snd_queue`
 #[test]
 fn test_reconnect_clears_send_state() {
     let (mut kcp1, mut kcp2, ch1, ch2) = create_loopback_pair(0x1234_5678);
@@ -789,7 +802,7 @@ fn test_reconnect_clears_send_state() {
 
     // kcp1 模拟服务端，已发送大量数据（snd_nxt 前进，snd_buf 有数据）
     for i in 0..100 {
-        let msg = format!("data-{:03}", i);
+        let msg = format!("data-{i:03}");
         kcp1.send(msg.as_bytes()).unwrap();
     }
     kcp1.update(0);
@@ -808,7 +821,7 @@ fn test_reconnect_clears_send_state() {
     assert_eq!(kcp1.wait_snd(), 0, "snd_buf/snd_queue should be cleared after reconnect");
 }
 
-/// CMD_RECONNECT 应清空接收端的 rcv_queue/rcv_buf
+/// `CMD_RECONNECT` 应清空接收端的 `rcv_queue`/`rcv_buf`
 #[test]
 fn test_reconnect_clears_recv_state() {
     let (mut kcp1, mut kcp2, ch1, ch2) = create_loopback_pair(0x1234_5678);
@@ -844,7 +857,7 @@ fn test_reconnect_clears_recv_state() {
 
 /// 重连后应能继续正常收发数据
 ///
-/// CMD_RECONNECT 只重置接收方状态，因此需要两端互发来实现双向同步，
+/// `CMD_RECONNECT` 只重置接收方状态，因此需要两端互发来实现双向同步，
 /// 模拟真实场景：客户端重建连接后，服务端重置状态并通过响应使客户端也同步。
 #[test]
 fn test_reconnect_then_communicate() {
@@ -854,14 +867,14 @@ fn test_reconnect_then_communicate() {
 
     // 先发一批数据，建立状态
     for i in 0..5 {
-        kcp1.send(format!("pre-{}", i).as_bytes()).unwrap();
+        kcp1.send(format!("pre-{i}").as_bytes()).unwrap();
     }
     drain_loop(&mut kcp1, &mut kcp2, &ch1, &ch2, 0);
     // kcp2 收掉所有旧数据
     let mut buf = vec![0u8; 1024];
     loop {
         match kcp2.recv(&mut buf) {
-            Ok(n) if n > 0 => continue,
+            Ok(n) if n > 0 => {}
             _ => break,
         }
     }
@@ -881,7 +894,7 @@ fn test_reconnect_then_communicate() {
         "should be able to communicate after reconnect");
 }
 
-/// 两次 CMD_RECONNECT 连续发送（双向同步）
+/// 两次 `CMD_RECONNECT` 连续发送（双向同步）
 #[test]
 fn test_reconnect_double() {
     let (mut kcp1, mut kcp2, ch1, ch2) = create_loopback_pair(0x1234_5678);
@@ -913,11 +926,11 @@ fn test_reconnect_double() {
     assert_eq!(&buf[..n], b"after second reconnect");
 }
 
-/// 普通首包（非 CMD_RECONNECT）不应重置 snd_nxt —— is_fresh fix 的回归测试
+/// 普通首包（非 `CMD_RECONNECT`）不应重置 `snd_nxt` —— `is_fresh` fix 的回归测试
 ///
-/// 这是 network_sim mode 1 (nc=true) 中触发的 bug：
-/// kcp1 已发送数据（snd_nxt > 0, snd_buf 非空），
-/// 收到 kcp2 的普通包作为首包时，is_fresh 错误地重置了 snd_nxt = seg.una，
+/// 这是 `network_sim` mode 1 (nc=true) 中触发的 bug：
+/// kcp1 已发送数据（`snd_nxt` > 0, `snd_buf` 非空），
+/// 收到 kcp2 的普通包作为首包时，`is_fresh` 错误地重置了 `snd_nxt` = seg.una，
 /// 导致 flush 中断言失败。
 #[test]
 fn test_first_input_does_not_reset_snd_nxt() {

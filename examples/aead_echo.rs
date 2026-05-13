@@ -122,6 +122,7 @@ async fn run_server(key: &[u8; 32], addr: &str) {
 }
 
 #[cfg(feature = "aead")]
+#[allow(clippy::similar_names)]
 async fn run_client(key: &[u8; 32], addr: &str, conv: u32) {
     use kcp2::crypto::{Aes256GcmCrypto, KcpCrypto};
     use kcp2::{KcpConfig, KcpConnector};
@@ -237,6 +238,7 @@ async fn run_server_chacha(key: &[u8; 32], addr: &str) {
 }
 
 #[cfg(feature = "aead")]
+#[allow(clippy::similar_names)]
 async fn run_client_chacha(key: &[u8; 32], addr: &str, conv: u32) {
     use kcp2::crypto::{ChaCha20Poly1305Crypto, KcpCrypto};
     use kcp2::{KcpConfig, KcpConnector};

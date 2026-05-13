@@ -101,7 +101,21 @@ impl KcpListener {
         loop {
             let mut buf = self.buf_pool.get();
 
-            let (n, addr) = self.transport.recv_from(&mut buf).await?;
+            let recv_result = tokio::select! {
+                r = self.transport.recv_from(&mut buf) => { r }
+                _ = self.closed.notified() => {
+                    self.buf_pool.put(buf);
+                    return Err(io::Error::other("listener closed"));
+                }
+            };
+
+            let (n, addr) = match recv_result {
+                Ok(r) => r,
+                Err(e) => {
+                    self.buf_pool.put(buf);
+                    return Err(e);
+                }
+            };
 
             if n < 4 {
                 self.buf_pool.put(buf);
@@ -139,7 +153,21 @@ impl KcpListener {
         let mut udp_buf = self.buf_pool.get();
 
         loop {
-            let (n, addr) = self.transport.recv_from(&mut udp_buf).await?;
+            let recv_result = tokio::select! {
+                r = self.transport.recv_from(&mut udp_buf) => { r }
+                _ = self.closed.notified() => {
+                    self.buf_pool.put(udp_buf);
+                    return Err(io::Error::other("listener closed"));
+                }
+            };
+
+            let (n, addr) = match recv_result {
+                Ok(r) => r,
+                Err(e) => {
+                    self.buf_pool.put(udp_buf);
+                    return Err(e);
+                }
+            };
 
             if n < 4 {
                 continue;
@@ -152,9 +180,13 @@ impl KcpListener {
             let conn = match conn {
                 Some(conn) if conn.addr() == addr => {
                     let data = Bytes::copy_from_slice(&udp_buf[..n]);
-                    conn.input_bytes(data).await.map_err(|e| {
-                        io::Error::other(e.to_string())
-                    })?;
+                    match conn.input_bytes(data).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            self.buf_pool.put(udp_buf);
+                            return Err(io::Error::other(e.to_string()));
+                        }
+                    }
                     conn
                 }
                 _ => {
@@ -166,9 +198,13 @@ impl KcpListener {
                     }
                     let conn = self.create_connection(conv, addr);
                     let data = Bytes::copy_from_slice(&udp_buf[..n]);
-                    conn.input_bytes(data).await.map_err(|e| {
-                        io::Error::other(e.to_string())
-                    })?;
+                    match conn.input_bytes(data).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            self.buf_pool.put(udp_buf);
+                            return Err(io::Error::other(e.to_string()));
+                        }
+                    }
                     conn
                 }
             };
@@ -222,7 +258,7 @@ impl KcpListener {
     }
 
     pub async fn close(&self) {
-        self.closed.notify_one();
+        self.closed.notify_waiters();
         self.connections.clear();
     }
 }

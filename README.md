@@ -613,6 +613,69 @@ KcpConfig::default()
     .dead_link(8)
 ```
 
+## Important Usage Notes
+
+### Send Size Limits
+
+`send()` splits data into KCP segments. The maximum number of segments per call is bounded by the receive window size (`WND_RCV`, default 128). When `stream` mode is enabled and data exceeds `WND_RCV × MSS` (~176KB with defaults), `send()` returns `Err(TooManyFragments)` instead of silently delivering partial data.
+
+```rust
+// WRONG: may silently lose data in older versions, now returns error
+conn.send(&huge_data).await.unwrap();  // panics if oversized
+
+// RIGHT: handle the error explicitly
+match conn.send(&huge_data).await {
+    Ok(()) => { /* sent */ }
+    Err(KcpError::TooManyFragments { .. }) => { /* chunk and retry */ }
+    Err(e) => return Err(e.into()),
+}
+```
+
+**Recommendation**: For large transfers, chunk data into sizes well below `WND_RCV × MSS` at the application layer.
+
+### Receive Buffer Must Be Large Enough
+
+`recv()` / `try_recv()` returns `Err(BufferTooSmall { required, available })` when the provided buffer is too small for the next message. **Data is not consumed** — you can retry with a larger buffer.
+
+```rust
+let mut buf = vec![0u8; 2048];
+loop {
+    match conn.recv(&mut buf).await {
+        Ok(n) => { /* process &buf[..n] */ }
+        Err(KcpError::BufferTooSmall { required, .. }) => {
+            buf.resize(required, 0);
+            continue;  // retry with larger buffer
+        }
+        Err(e) => break,
+    }
+}
+```
+
+### Never Ignore Error Return Values
+
+All I/O methods (`send`, `recv`, `input`, `flush`) may return errors that indicate data loss or connection failure. Ignoring these with `let _ =` or `.unwrap()` in non-test code can mask bugs:
+
+```rust
+// WRONG: silently drops send failures
+let _ = session.send(b"important data");
+
+// RIGHT: handle or propagate
+session.send(b"important data")?;
+// or at minimum, log it
+if let Err(e) = session.send(b"important data") {
+    log::error!("send failed: {e}");
+}
+```
+
+This is especially important for `kcp2-embassy` where the `step()` method drives both `input()` and `flush()` internally — ensure your `log` backend is initialized to capture warnings.
+
+### Stream Mode Boundary Behavior
+
+When `stream` mode is enabled (`KcpConfig::stream(true)`), KCP coalesces consecutive `send()` calls into shared segments for efficiency. This means:
+
+- Message boundaries are **not preserved** — two 100-byte sends may arrive as one 200-byte recv, or be split differently.
+- If you need message framing, implement it at the application layer (e.g., length-prefix protocol).
+
 ## Error Types
 
 | Variant | Description |
@@ -624,6 +687,7 @@ KcpConfig::default()
 | `DeadLink` | Connection is dead |
 | `Timeout` | Operation timed out |
 | `BufferTooSmall` | Insufficient buffer size |
+| `TooManyFragments` | Data too large for single send (exceeds `WND_RCV × MSS`) |
 
 ## Examples
 

@@ -1,3 +1,5 @@
+#![allow(clippy::module_name_repetitions)]
+
 //! KCP 协议 std/async 层 — 基于 Tokio Actor 模式
 //!
 //! # 协议扩展

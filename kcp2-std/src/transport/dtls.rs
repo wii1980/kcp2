@@ -23,7 +23,7 @@
 //! use kcp2_std::transport::{DtlsClientTransport, DtlsConfig};
 //! use kcp2_std::{KcpConnector, KcpConfig};
 //!
-//! let cfg = DtlsConfig::client_psk(b"shared-secret".to_vec(), b"kcp2");
+//! let cfg = DtlsConfig::client_psk(b"shared-secret", b"kcp2");
 //! let transport = Arc::new(DtlsClientTransport::connect("127.0.0.1:12345", cfg).await?);
 //! let session = KcpConnector::from_transport(transport, "127.0.0.1:12345", KcpConfig::default())?
 //!     .conv(1)
@@ -45,7 +45,7 @@
 //! use kcp2_std::transport::{DtlsServerTransport, DtlsConfig};
 //! use kcp2_std::{KcpListener, KcpConfig};
 //!
-//! let cfg = DtlsConfig::server_psk(b"shared-secret".to_vec(), b"kcp2");
+//! let cfg = DtlsConfig::server_psk(b"shared-secret", b"kcp2");
 //! let transport = Arc::new(DtlsServerTransport::bind("0.0.0.0:12345", cfg).await?);
 //! let listener = KcpListener::from_transport(transport, KcpConfig::default())?;
 //! # Ok(())
@@ -137,8 +137,8 @@ impl DtlsConfig {
     /// 创建客户端 PSK 配置
     ///
     /// 使用 `TLS_PSK_WITH_AES_128_CCM_8`，IoT 友好（资源占用低），仅 8 字节 AEAD tag。
-    pub fn client_psk(psk: Vec<u8>, identity_hint: impl Into<Vec<u8>>) -> Self {
-        let psk_clone = psk.clone();
+    pub fn client_psk(psk: &[u8], identity_hint: impl Into<Vec<u8>>) -> Self {
+        let psk_clone = psk.to_owned();
         let inner = DtlsRawConfig {
             psk: Some(Arc::new(move |_hint: &[u8]| Ok(psk_clone.clone()))),
             psk_identity_hint: Some(identity_hint.into()),
@@ -153,8 +153,8 @@ impl DtlsConfig {
     }
 
     /// 创建服务端 PSK 配置
-    pub fn server_psk(psk: Vec<u8>, identity_hint: impl Into<Vec<u8>>) -> Self {
-        let psk_clone = psk.clone();
+    pub fn server_psk(psk: &[u8], identity_hint: impl Into<Vec<u8>>) -> Self {
+        let psk_clone = psk.to_owned();
         let inner = DtlsRawConfig {
             psk: Some(Arc::new(move |_hint: &[u8]| Ok(psk_clone.clone()))),
             psk_identity_hint: Some(identity_hint.into()),
@@ -690,7 +690,7 @@ mod tests {
 
     #[test]
     fn test_dtls_config_psk_client() {
-        let cfg = DtlsConfig::client_psk(b"secret".to_vec(), "kcp2");
+        let cfg = DtlsConfig::client_psk(b"secret", "kcp2");
         assert!(!cfg.inner.cipher_suites.is_empty());
         assert!(cfg.inner.psk.is_some());
         assert_eq!(cfg.overhead, DEFAULT_DTLS_OVERHEAD);
@@ -698,13 +698,13 @@ mod tests {
 
     #[test]
     fn test_dtls_config_psk_server() {
-        let cfg = DtlsConfig::server_psk(b"secret".to_vec(), "kcp2");
+        let cfg = DtlsConfig::server_psk(b"secret", "kcp2");
         assert!(cfg.inner.psk.is_some());
     }
 
     #[test]
     fn test_dtls_config_builder() {
-        let cfg = DtlsConfig::client_psk(b"secret".to_vec(), "kcp2")
+        let cfg = DtlsConfig::client_psk(b"secret", "kcp2")
             .handshake_timeout(Duration::from_secs(3))
             .overhead(40)
             .send_queue_size(128)
@@ -726,7 +726,7 @@ mod tests {
     async fn test_dtls_handshake_psk() {
         let server_addr = find_free_addr();
 
-        let server_cfg = DtlsConfig::server_psk(b"shared-secret".to_vec(), "kcp2")
+        let server_cfg = DtlsConfig::server_psk(b"shared-secret", "kcp2")
             .handshake_timeout(Duration::from_secs(5));
         let server = DtlsServerTransport::bind(&server_addr, server_cfg)
             .await
@@ -734,7 +734,7 @@ mod tests {
         let server_addr_resolved = server.local_addr().unwrap();
         let server = Arc::new(server);
 
-        let client_cfg = DtlsConfig::client_psk(b"shared-secret".to_vec(), "kcp2")
+        let client_cfg = DtlsConfig::client_psk(b"shared-secret", "kcp2")
             .handshake_timeout(Duration::from_secs(5));
         let client = DtlsClientTransport::connect(&server_addr_resolved.to_string(), client_cfg)
             .await

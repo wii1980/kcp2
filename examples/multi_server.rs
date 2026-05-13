@@ -70,7 +70,7 @@ fn make_aead_config(use_chacha: bool) -> KcpConfig {
 
 #[cfg(feature = "aead")]
 fn parse_aead_algo(args: &[String]) -> bool {
-    matches!(args.get(2).map(|s| s.as_str()), Some("chacha"))
+    matches!(args.get(2).map(String::as_str), Some("chacha"))
 }
 
 #[cfg(feature = "aead")]
@@ -465,7 +465,7 @@ async fn run_aead_multi(use_chacha: bool) {
 async fn run_dtls_server() -> Result<(), Box<dyn std::error::Error>> {
     use kcp2::transport::{DtlsConfig, DtlsServerTransport, KcpTransport};
 
-    let dtls_cfg = DtlsConfig::server_psk(DTLS_PSK.to_vec(), DTLS_IDENTITY)
+    let dtls_cfg = DtlsConfig::server_psk(DTLS_PSK, DTLS_IDENTITY)
         .handshake_timeout(Duration::from_secs(5));
     let transport = Arc::new(DtlsServerTransport::bind(SERVER_ADDR, dtls_cfg).await?);
     println!("[DTLS 服务器] DTLS+KCP 监听在 {}", transport.local_addr()?);
@@ -489,7 +489,7 @@ async fn run_dtls_server() -> Result<(), Box<dyn std::error::Error>> {
 async fn run_dtls_client() -> Result<(), Box<dyn std::error::Error>> {
     use kcp2::transport::{DtlsClientTransport, DtlsConfig, KcpTransport};
 
-    let dtls_cfg = DtlsConfig::client_psk(DTLS_PSK.to_vec(), DTLS_IDENTITY)
+    let dtls_cfg = DtlsConfig::client_psk(DTLS_PSK, DTLS_IDENTITY)
         .handshake_timeout(Duration::from_secs(5));
     let transport = Arc::new(DtlsClientTransport::connect(CONNECT_ADDR, dtls_cfg).await?);
     println!(
@@ -557,7 +557,7 @@ async fn run_dtls_multi() -> Result<(), Box<dyn std::error::Error>> {
 
             let conv = CONV_BASE + 300 + i as u32;
 
-            let dtls_cfg = DtlsConfig::client_psk(DTLS_PSK.to_vec(), DTLS_IDENTITY)
+            let dtls_cfg = DtlsConfig::client_psk(DTLS_PSK, DTLS_IDENTITY)
                 .handshake_timeout(Duration::from_secs(5));
             let transport = match DtlsClientTransport::connect(CONNECT_ADDR, dtls_cfg).await {
                 Ok(t) => Arc::new(t),

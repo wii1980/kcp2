@@ -28,6 +28,20 @@ let n = session.recv(&mut buf).await?;
 session.step().await;
 ```
 
+## Important Notes
+
+### Error Handling
+
+`send()`, `recv()`, and `step()` may return errors. Never ignore them — `send()` returns `TooManyFragments` when data exceeds the segment limit, and `recv()` returns `BufferTooSmall` when the buffer is too small. Ensure your `log` backend is initialized so internal warnings from `step()` are visible.
+
+### Send Size Limit
+
+`send()` returns `Err(TooManyFragments)` when data exceeds `WND_RCV × MSS` (~176KB with defaults). Chunk large data at the application layer.
+
+### Stream Mode
+
+When stream mode is enabled in `EmbKcpConfig`, message boundaries are not preserved. Implement application-level framing if needed.
+
 ## Preset Configurations
 
 | Preset | Description |

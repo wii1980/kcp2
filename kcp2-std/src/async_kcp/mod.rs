@@ -16,7 +16,7 @@ use bytes::Bytes;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, watch};
 
-use kcp2_core::{Kcp, KcpOutput, SendHandle, Result};
+use kcp2_core::{Kcp, KcpError, KcpOutput, SendHandle, Result};
 
 use crate::crypto::KcpCrypto;
 use crate::transport::{KcpTransport, UdpTransport};
@@ -254,16 +254,26 @@ impl<Output: KcpOutput + Send + 'static> AsyncKcp<Output> {
 
     pub async fn try_recv(&self, buf: &mut [u8]) -> Result<usize> {
         let data = self.handle.try_recv().await?;
-        let n = data.len().min(buf.len());
-        buf[..n].copy_from_slice(&data[..n]);
-        Ok(n)
+        if data.len() > buf.len() {
+            return Err(KcpError::BufferTooSmall {
+                required: data.len(),
+                available: buf.len(),
+            });
+        }
+        buf[..data.len()].copy_from_slice(&data);
+        Ok(data.len())
     }
 
     pub async fn recv(&self, buf: &mut [u8]) -> Result<usize> {
         let data = self.handle.recv().await?;
-        let n = data.len().min(buf.len());
-        buf[..n].copy_from_slice(&data[..n]);
-        Ok(n)
+        if data.len() > buf.len() {
+            return Err(KcpError::BufferTooSmall {
+                required: data.len(),
+                available: buf.len(),
+            });
+        }
+        buf[..data.len()].copy_from_slice(&data);
+        Ok(data.len())
     }
 
     pub async fn update(&self, _current: u32) {

@@ -1,3 +1,5 @@
+#![allow(clippy::module_name_repetitions)]
+
 //! KCP 协议核心实现 — `no_std` 兼容
 //!
 //! 提供纯算法的 KCP 协议控制块，不依赖任何操作系统或网络层。

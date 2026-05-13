@@ -2,6 +2,7 @@
 
 use bytes::{Bytes, BytesMut};
 use crossbeam_queue::ArrayQueue;
+use std::collections::VecDeque;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -15,16 +16,25 @@ use super::cmd::{KcpCmd, PendingWaitAck};
 use crate::crypto::KcpCrypto;
 use crate::transport::KcpTransport;
 
-const OUTPUT_QUEUE_CAPACITY: usize = 256;
+const OUTPUT_QUEUE_CAPACITY: usize = 512;
+const OUTPUT_POOL_CAPACITY: usize = 64;
+const PENDING_SEND_CAP: usize = 64;
 
-/// KCP output 收集器 — flush 时将数据包收集到锁无关的 ArrayQueue，由 Actor drain 并通过 socket 发送
+/// KCP output 收集器 — flush 时将数据包收集到锁无关的 ArrayQueue，使用 BytesMut 池减少分配
 type OutputCollector = Box<dyn Fn(&[u8]) + Send + Sync>;
 
-fn make_output_collector() -> (OutputCollector, Arc<ArrayQueue<Vec<u8>>>) {
-    let queue: Arc<ArrayQueue<Vec<u8>>> = Arc::new(ArrayQueue::new(OUTPUT_QUEUE_CAPACITY));
+fn make_output_collector(
+    pool: Arc<ArrayQueue<BytesMut>>,
+) -> (OutputCollector, Arc<ArrayQueue<BytesMut>>) {
+    let queue: Arc<ArrayQueue<BytesMut>> = Arc::new(ArrayQueue::new(OUTPUT_QUEUE_CAPACITY));
     let q = queue.clone();
     let collector: OutputCollector = Box::new(move |data: &[u8]| {
-        let _ = q.push(data.to_vec());
+        let mut buf = pool.pop().unwrap_or_default();
+        buf.clear();
+        buf.extend_from_slice(data);
+        if q.push(buf).is_err() {
+            log::warn!("KCP output queue full ({}), packet dropped", OUTPUT_QUEUE_CAPACITY);
+        }
     });
     (collector, queue)
 }
@@ -39,11 +49,9 @@ pub(crate) struct KcpActor {
     peer: SocketAddr,
     cmd_rx: mpsc::Receiver<KcpCmd>,
     shutdown_rx: watch::Receiver<bool>,
-    /// 是否使用 connected socket（客户端用 send，服务端用 send_to）
     connected: bool,
-    /// 收集 KCP output 的缓冲区
-    collected: Arc<ArrayQueue<Vec<u8>>>,
-    /// 可选的加密层
+    collected: Arc<ArrayQueue<BytesMut>>,
+    output_pool: Arc<ArrayQueue<BytesMut>>,
     crypto: Option<Arc<dyn KcpCrypto>>,
     /// 待处理的 recv 请求
     pending_recv: Option<oneshot::Sender<Result<BytesMut>>>,
@@ -51,6 +59,8 @@ pub(crate) struct KcpActor {
     pending_wait_acks: Vec<PendingWaitAck>,
     /// 待处理的 wait_all_sent 请求
     pending_wait_all: Vec<oneshot::Sender<Result<()>>>,
+    /// WouldBlock 时暂存的重试包
+    pending_send: VecDeque<Vec<u8>>,
     /// recv 用的临时缓冲区
     recv_tmp: BytesMut,
 }
@@ -65,7 +75,8 @@ impl KcpActor {
         shutdown_rx: watch::Receiver<bool>,
         crypto: Option<Arc<dyn KcpCrypto>>,
     ) -> Self {
-        let (collector, collected) = make_output_collector();
+        let output_pool = Arc::new(ArrayQueue::new(OUTPUT_POOL_CAPACITY));
+        let (collector, collected) = make_output_collector(output_pool.clone());
         let mut kcp = Kcp::new(conv, collector);
         kcp.update(0);
 
@@ -77,10 +88,12 @@ impl KcpActor {
             shutdown_rx,
             connected,
             collected,
+            output_pool,
             crypto,
             pending_recv: None,
             pending_wait_acks: Vec::new(),
             pending_wait_all: Vec::new(),
+            pending_send: VecDeque::new(),
             recv_tmp: BytesMut::with_capacity(2048),
         }
     }
@@ -116,11 +129,9 @@ impl KcpActor {
                     next_update = self.calc_next_update();
                 }
 
-                // 关闭信号
+                // 关闭信号（值变为 true 或 sender drop 均触发退出）
                 _ = self.shutdown_rx.changed() => {
-                    if *self.shutdown_rx.borrow() {
-                        break;
-                    }
+                    break;
                 }
             }
         }
@@ -133,7 +144,6 @@ impl KcpActor {
     fn handle_cmd(&mut self, cmd: KcpCmd) -> bool {
         match cmd {
             KcpCmd::Send { data, ack } => {
-                // 先 update 处理重传/窗口探测，再 send 入队，最后 flush 发送
                 self.kcp.update(current());
                 let result = self.kcp.send(&data);
                 self.flush_and_drain();
@@ -179,11 +189,19 @@ impl KcpActor {
 
             KcpCmd::Recv { ack } => {
                 self.kcp.update(current());
+                if ack.is_closed() {
+                    // recv future was cancelled (e.g. tokio::select! picked another
+                    // branch). Don't consume data from KCP queue — next Recv will get it.
+                    return false;
+                }
                 if let Some(data) = self.try_recv_inner() {
                     self.flush_and_drain();
-                    let _ = ack.send(data);
+                    if ack.send(data).is_err() {
+                        // Receiver dropped between is_closed() and send().
+                        // Data consumed from KCP queue but receiver gone.
+                        // Extremely unlikely race, but data is lost.
+                    }
                 } else {
-                    // 无数据，挂起等待
                     self.pending_recv = Some(ack);
                 }
             }
@@ -261,11 +279,13 @@ impl KcpActor {
 
             KcpCmd::Kill => {
                 self.kcp.kill();
+                self.pending_send.clear();
                 self.resolve_all_pending_with_dead();
                 return true;
             }
 
             KcpCmd::SendReconnect { ack } => {
+                self.pending_send.clear();
                 self.kcp.update(current());
                 let result = self.kcp.send_reconnect();
                 self.flush_and_drain();
@@ -291,27 +311,64 @@ impl KcpActor {
         self.check_wait_all();
     }
 
-    /// flush KCP 并通过 socket 发送所有 output
     fn flush_and_drain(&mut self) {
         self.kcp.flush();
+        self.retry_pending();
         self.drain_output();
     }
 
     fn drain_output(&mut self) {
         while let Some(pkt) = self.collected.pop() {
-            let payload = if let Some(ref crypto) = self.crypto {
+            let payload: Vec<u8> = if let Some(ref crypto) = self.crypto {
                 crypto.encrypt(self.kcp.conv(), &pkt)
             } else {
-                pkt
+                pkt.to_vec()
             };
             let result = if self.connected {
                 self.transport.try_send(&payload)
             } else {
                 self.transport.try_send_to(&payload, self.peer)
             };
-            if let Err(e) = result {
-                if e.kind() != io::ErrorKind::WouldBlock {
+            match result {
+                Ok(_) => {
+                    // Return BytesMut to pool for reuse
+                    let _ = self.output_pool.push(pkt);
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    if self.pending_send.len() < PENDING_SEND_CAP {
+                        self.pending_send.push_back(payload);
+                    } else {
+                        log::warn!("KCP pending_send full, dropping packet");
+                    }
+                    break;
+                }
+                Err(e) => {
                     log::warn!("KCP output send error: {}", e);
+                    let _ = self.output_pool.push(pkt);
+                }
+            }
+        }
+    }
+
+    /// 重试暂存的 WouldBlock 包
+    fn retry_pending(&mut self) {
+        while !self.pending_send.is_empty() {
+            let pkt = &self.pending_send[0];
+            let result = if self.connected {
+                self.transport.try_send(pkt)
+            } else {
+                self.transport.try_send_to(pkt, self.peer)
+            };
+            match result {
+                Ok(_) => {
+                    self.pending_send.pop_front();
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    break;
+                }
+                Err(e) => {
+                    log::warn!("KCP pending send error: {}", e);
+                    self.pending_send.pop_front();
                 }
             }
         }
@@ -341,10 +398,12 @@ impl KcpActor {
     /// 尝试唤醒挂起的 recv
     fn try_wake_recv(&mut self) {
         if let Some(ack) = self.pending_recv.take() {
+            if ack.is_closed() {
+                return;
+            }
             if let Some(result) = self.try_recv_inner() {
                 let _ = ack.send(result);
             } else {
-                // 仍然没有数据，放回去
                 self.pending_recv = Some(ack);
             }
         }
@@ -398,6 +457,7 @@ impl KcpActor {
         for pending in self.pending_wait_all.drain(..) {
             let _ = pending.send(Err(KcpError::DeadLink));
         }
+        self.pending_send.clear();
     }
 
     /// 使用 ikcp_check 计算下次 update 时间

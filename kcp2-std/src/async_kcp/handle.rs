@@ -201,7 +201,9 @@ impl KcpHandle {
     /// 强制标记连接为死亡状态
     pub(crate) fn kill(&self) {
         // kill 是 fire-and-forget，用 try_send 避免在 sync 上下文中 await
-        let _ = self.cmd_tx.try_send(KcpCmd::Kill);
+        if self.cmd_tx.try_send(KcpCmd::Kill).is_err() {
+            log::warn!("KcpHandle::kill: command channel full, kill command dropped");
+        }
     }
 
         /// 发送 CMD_RECONNECT

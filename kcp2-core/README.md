@@ -80,6 +80,24 @@ fn main() {
 
 For the full list of configuration options see [`set_nodelay`](src/kcp/alloc_impl.rs), [`set_wndsize`](src/kcp/alloc_impl.rs), [`set_mtu`](src/kcp/alloc_impl.rs), etc.
 
+## Important Usage Notes
+
+### Send Size Limits
+
+`send()` splits data into KCP segments. The maximum segments per call is bounded by `WND_RCV` (default 128). When data exceeds `WND_RCV × MSS` bytes, `send()` returns `Err(KcpError::TooManyFragments)`. Chunk large data at the application layer.
+
+### Receive Buffer Size
+
+`recv()` returns `Err(KcpError::BufferTooSmall { required, available })` when the buffer is too small. The data stays in the receive queue — retry with a buffer of at least `required` bytes.
+
+### Error Handling
+
+All methods (`send`, `recv`, `input`) may return errors. Never ignore them with `let _ =` in production code — errors indicate data loss or protocol violations.
+
+### Stream Mode
+
+When `stream` mode is enabled (`set_stream(true)`), consecutive `send()` calls are coalesced. Message boundaries are not preserved. Implement application-level framing if needed.
+
 ## Related Crates
 
 - **[rs-kcp2](https://github.com/wii1980/kcp2)** — Full async KCP implementation with sockets (`kcp2-std`, `kcp2-embassy`)

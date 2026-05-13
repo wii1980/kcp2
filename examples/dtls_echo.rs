@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "help".into());
     match mode.as_str() {
         "server" => {
-            let dtls_cfg = DtlsConfig::server_psk(PSK.to_vec(), IDENTITY)
+            let dtls_cfg = DtlsConfig::server_psk(PSK, IDENTITY)
                 .handshake_timeout(Duration::from_secs(5));
             let transport = Arc::new(DtlsServerTransport::bind(SERVER_ADDR, dtls_cfg).await?);
             println!("[server] DTLS+KCP listening on {}", transport.local_addr()?);
@@ -55,15 +55,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         match conn.recv(&mut buf).await {
                             Ok(n) if n > 0 => {
                                 let msg = String::from_utf8_lossy(&buf[..n]);
-                                println!("[server] {} → {}", peer, msg);
-                                let echo = format!("echo({}): {}", peer, msg);
+                                println!("[server] {peer} → {msg}");
+                                let echo = format!("echo({peer}): {msg}");
                                 if conn.send(echo.as_bytes()).await.is_err() {
                                     break;
                                 }
                             }
                             Ok(_) => {}
                             Err(e) => {
-                                eprintln!("[server] recv err from {}: {}", peer, e);
+                                eprintln!("[server] recv err from {peer}: {e}");
                                 break;
                             }
                         }
@@ -72,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         "client" => {
-            let dtls_cfg = DtlsConfig::client_psk(PSK.to_vec(), IDENTITY)
+            let dtls_cfg = DtlsConfig::client_psk(PSK, IDENTITY)
                 .handshake_timeout(Duration::from_secs(5));
             let transport = Arc::new(DtlsClientTransport::connect(SERVER_ADDR, dtls_cfg).await?);
             println!("[client] DTLS handshake done, local={}", transport.local_addr()?);
@@ -86,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             for msg in ["hello", "world", "kcp", "over", "dtls"] {
                 conn.send(msg.as_bytes()).await?;
-                println!("[client] → {}", msg);
+                println!("[client] → {msg}");
 
                 let mut buf = vec![0u8; 4096];
                 let n = tokio::time::timeout(Duration::from_secs(3), conn.recv(&mut buf))

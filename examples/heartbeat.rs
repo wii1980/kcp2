@@ -114,7 +114,7 @@ async fn connect_aead(server_addr: &str, use_chacha: bool) -> Result<KcpSession,
 async fn connect_dtls(server_addr: &str) -> Result<KcpSession, String> {
     use kcp2::transport::{DtlsClientTransport, DtlsConfig};
 
-    let dtls_cfg = DtlsConfig::client_psk(DTLS_PSK.to_vec(), DTLS_IDENTITY)
+    let dtls_cfg = DtlsConfig::client_psk(DTLS_PSK, DTLS_IDENTITY)
         .handshake_timeout(Duration::from_secs(5));
     let transport = Arc::new(
         DtlsClientTransport::connect(server_addr, dtls_cfg)
@@ -285,7 +285,7 @@ async fn main() {
         // AEAD 模式
         #[cfg(feature = "aead")]
         Some("aead") => {
-            let use_chacha = matches!(args.get(2).map(|s| s.as_str()), Some("chacha"));
+            let use_chacha = matches!(args.get(2).map(String::as_str), Some("chacha"));
             let algo = algo_name(use_chacha);
             let server_addr = std::env::var("KCP_SERVER_ADDR")
                 .unwrap_or_else(|_| DEFAULT_SERVER_ADDR.to_string());

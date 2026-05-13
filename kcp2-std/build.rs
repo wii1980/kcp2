@@ -3,9 +3,10 @@
 /// Both provide encryption; enabling both would cause double-encryption,
 /// wasting CPU and bandwidth. Fail early with a clear message.
 fn main() {
-    assert!(
-        !(cfg!(feature = "aead") && cfg!(feature = "dtls")),
-        r"
+    const _: () = {
+        assert!(
+            !(cfg!(feature = "aead") && cfg!(feature = "dtls")),
+            r"
 
   features `aead` and `dtls` are mutually exclusive.
 
@@ -14,5 +15,6 @@ fn main() {
 
   Pick one. See kcp2-std documentation for details.
 "
-    );
+        );
+    };
 }

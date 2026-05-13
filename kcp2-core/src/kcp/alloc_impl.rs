@@ -218,9 +218,15 @@ impl<Output: KcpOutput> Kcp<Output> {
                 self.rcv_nxt
             );
 
-            self.snd_queue.clear();
+            let snd_queue_segs: Vec<Segment> = self.snd_queue.drain(..).collect();
+            for seg in snd_queue_segs {
+                self.release_segment(seg);
+            }
             self.rcv_queue.clear();
-            self.snd_buf.clear();
+            let snd_buf_segs: Vec<(u32, Segment)> = self.snd_buf.drain(..).collect();
+            for (_, seg) in snd_buf_segs {
+                self.release_segment(seg);
+            }
             self.rcv_buf.clear();
             self.acklist.clear();
 
@@ -274,7 +280,7 @@ impl<Output: KcpOutput> Kcp<Output> {
         if seg.frg == 0 {
             return Ok(seg.data.len());
         }
-        if self.rcv_queue.len() < (seg.frg + 1) as usize {
+        if self.rcv_queue.len() < seg.frg as usize + 1 {
             log::trace!(
                 "peek_size_internal: incomplete packet, have {} fragments, need {}",
                 self.rcv_queue.len(),
@@ -296,9 +302,14 @@ impl<Output: KcpOutput> Kcp<Output> {
         self.free_segments.pop().unwrap_or_default()
     }
 
+    /// Maximum segment pool size to bound memory under high churn.
+    const FREE_SEGMENTS_MAX: usize = 64;
+
     fn release_segment(&mut self, mut seg: Segment) {
         seg.data.clear();
-        self.free_segments.push(seg);
+        if self.free_segments.len() < Self::FREE_SEGMENTS_MAX {
+            self.free_segments.push(seg);
+        }
     }
 
     fn wnd_unused(&self) -> u16 {
@@ -386,6 +397,7 @@ impl<Output: KcpOutput> Kcp<Output> {
         let mut buffer = data;
         let mut sent = 0;
         let sn_start = self.next_sn_for_handle;
+        let mut tail_extend = 0;
 
         if self.stream {
             if let Some(old) = self.snd_queue.back_mut() {
@@ -395,6 +407,7 @@ impl<Output: KcpOutput> Kcp<Output> {
                     old.data.extend_from_slice(&buffer[..extend]);
                     buffer = &buffer[extend..];
                     sent += extend;
+                    tail_extend = extend;
                 }
             }
             if buffer.is_empty() {
@@ -418,12 +431,11 @@ impl<Output: KcpOutput> Kcp<Output> {
         };
 
         if count >= WND_RCV as usize {
-            if self.stream && sent > 0 && !track_handle {
-                return Ok(SendResult {
-                    bytes_sent: sent,
-                    sn_start: 0,
-                    sn_count: 0,
-                });
+            // Roll back tail append to avoid corrupting snd_queue
+            if tail_extend > 0 {
+                if let Some(old) = self.snd_queue.back_mut() {
+                    old.data.truncate(old.data.len() - tail_extend);
+                }
             }
             return Err(KcpError::TooManyFragments {
                 count,
@@ -505,7 +517,15 @@ impl<Output: KcpOutput> Kcp<Output> {
     }
 
     fn parse_una(&mut self, una: u32) {
-        self.snd_buf.retain(|(sn, _)| time_diff(una, *sn) <= 0);
+        let mut i = 0;
+        while i < self.snd_buf.len() {
+            if time_diff(una, self.snd_buf[i].0) > 0 {
+                let (_, seg) = self.snd_buf.remove(i);
+                self.release_segment(seg);
+            } else {
+                i += 1;
+            }
+        }
     }
 
     fn parse_ack(&mut self, sn: u32) {
@@ -692,7 +712,7 @@ impl<Output: KcpOutput> Kcp<Output> {
             self.incr = incr;
         }
 
-        Ok(data.len())
+        Ok(offset)
     }
 
     #[cfg(feature = "bytes")]
@@ -842,7 +862,7 @@ impl<Output: KcpOutput> Kcp<Output> {
                 ResendDecision::Timeout => {
                     seg.xmit += 1;
                     self.xmit += 1;
-                    log::debug!("retransmit sn={}, xmit={}", seg.sn, seg.xmit);
+                    log::trace!("retransmit sn={}, xmit={}", seg.sn, seg.xmit);
                     seg.rto = update_rto_for_retransmit(self.nodelay, seg.rto, self.rx_rto);
                     seg.resendts = self.current + seg.rto;
                     lost = true;
@@ -851,7 +871,7 @@ impl<Output: KcpOutput> Kcp<Output> {
                     seg.xmit += 1;
                     seg.fastack = 0;
                     seg.resendts = self.current + seg.rto;
-                    log::debug!("fast retransmit sn={}", seg.sn);
+                    log::trace!("fast retransmit sn={}", seg.sn);
                     change = true;
                 }
                 ResendDecision::NoResend => continue,

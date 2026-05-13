@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 use embassy_net::udp::UdpSocket;
@@ -10,26 +11,16 @@ use crate::config::EmbKcpConfig;
 use crate::crypto::EmbKcpCrypto;
 use crate::EmbassyClock;
 
+type KcpOutputFn = Box<dyn Fn(&[u8])>;
+
 pub struct EmbKcpSession<'a> {
-    kcp: Kcp<fn(&[u8])>,
-    pending: RefCell<Vec<Vec<u8>>>,
+    kcp: Kcp<KcpOutputFn>,
+    pending: Rc<RefCell<Vec<Vec<u8>>>>,
     socket: UdpSocket<'a>,
     remote: IpEndpoint,
     clock: EmbassyClock,
     config: EmbKcpConfig,
     crypto: Option<Box<dyn EmbKcpCrypto>>,
-}
-
-static PENDING_PTR: core::sync::atomic::AtomicPtr<u8> =
-    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
-
-fn collect_output(data: &[u8]) {
-    let ptr = PENDING_PTR.load(core::sync::atomic::Ordering::Relaxed);
-    if ptr.is_null() {
-        return;
-    }
-    let pending: &mut Vec<Vec<u8>> = unsafe { &mut *(ptr as *mut Vec<Vec<u8>>) };
-    pending.push(data.to_vec());
 }
 
 impl<'a> EmbKcpSession<'a> {
@@ -49,7 +40,12 @@ impl<'a> EmbKcpSession<'a> {
         config: EmbKcpConfig,
         crypto: Option<Box<dyn EmbKcpCrypto>>,
     ) -> Self {
-        let kcp = Kcp::new(conv, collect_output as fn(&[u8]));
+        let pending: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let pending_for_kcp = pending.clone();
+        let output: KcpOutputFn = Box::new(move |data: &[u8]| {
+            pending_for_kcp.borrow_mut().push(data.to_vec());
+        });
+        let kcp = Kcp::new(conv, output);
 
         let effective_mtu = if let Some(ref c) = crypto {
             config.mtu.saturating_sub(c.overhead())
@@ -59,7 +55,7 @@ impl<'a> EmbKcpSession<'a> {
 
         let mut session = Self {
             kcp,
-            pending: RefCell::new(Vec::new()),
+            pending,
             socket,
             remote,
             clock: EmbassyClock,
@@ -74,7 +70,12 @@ impl<'a> EmbKcpSession<'a> {
             session.config.nc,
         );
         session.kcp.set_wndsize(session.config.sndwnd, session.config.rcvwnd);
-        let _ = session.kcp.set_mtu(effective_mtu);
+        if let Err(e) = session.kcp.set_mtu(effective_mtu) {
+            log::warn!(
+                "EmbKcpSession: set_mtu({}) failed: {:?}. KCP MTU unchanged",
+                effective_mtu, e
+            );
+        }
         session.kcp.set_rx_minrto(session.config.rx_minrto);
         session.kcp.set_dead_link(session.config.dead_link);
         session.kcp.set_stream(session.config.stream);
@@ -129,10 +130,14 @@ impl<'a> EmbKcpSession<'a> {
     }
 
     pub async fn recv(&mut self, buf: &mut [u8]) -> KcpResult<usize> {
+        let deadline = Instant::now() + Duration::from_millis(self.config.timeout_ms);
         loop {
             match self.kcp.recv(buf) {
                 Ok(n) => return Ok(n),
                 Err(KcpError::RecvQueueEmpty) | Err(KcpError::IncompletePacket) => {
+                    if Instant::now() >= deadline {
+                        return Err(KcpError::Timeout);
+                    }
                     self.step().await;
                 }
                 Err(e) => return Err(e),
@@ -162,7 +167,9 @@ impl<'a> EmbKcpSession<'a> {
                 if let Some(ref crypto) = self.crypto {
                     match crypto.decrypt(data) {
                         Some(plaintext) => {
-                            let _ = self.kcp.input(&plaintext);
+                            if let Err(e) = self.kcp.input(&plaintext) {
+                                log::warn!("KCP input error (crypto): {:?}", e);
+                            }
                         }
                         None => {
                             log::warn!("KCP crypto: auth failed, packet discarded");
@@ -171,7 +178,9 @@ impl<'a> EmbKcpSession<'a> {
                         }
                     }
                 } else {
-                    let _ = self.kcp.input(data);
+                    if let Err(e) = self.kcp.input(data) {
+                        log::warn!("KCP input error: {:?}", e);
+                    }
                 }
 
                 self.flush_and_send().await;
@@ -188,13 +197,7 @@ impl<'a> EmbKcpSession<'a> {
     }
 
     async fn flush_and_send(&mut self) {
-        {
-            let mut pending = self.pending.borrow_mut();
-            let ptr = &mut *pending as *mut Vec<Vec<u8>>;
-            PENDING_PTR.store(ptr as *mut u8, core::sync::atomic::Ordering::Relaxed);
-            self.kcp.flush();
-            PENDING_PTR.store(core::ptr::null_mut(), core::sync::atomic::Ordering::Relaxed);
-        }
+        self.kcp.flush();
         let packets: Vec<Vec<u8>> = self.pending.borrow_mut().drain(..).collect();
         for pkt in packets {
             let payload = if let Some(ref crypto) = self.crypto {
@@ -202,7 +205,9 @@ impl<'a> EmbKcpSession<'a> {
             } else {
                 pkt
             };
-            let _ = self.socket.send_to(&payload, self.remote).await;
+            if let Err(e) = self.socket.send_to(&payload, self.remote).await {
+                log::warn!("KCP send_to failed: {:?}", e);
+            }
         }
     }
 
