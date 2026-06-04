@@ -1,10 +1,13 @@
+use std::collections::VecDeque;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
 use dashmap::DashMap;
+use parking_lot::Mutex;
 use tokio::net::UdpSocket;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -28,6 +31,9 @@ pub struct KcpListener {
     buf_pool: Arc<BufferPool>,
     cleanup_task: JoinHandle<()>,
     closed: Arc<Notify>,
+    pending_packets: Arc<Mutex<VecDeque<(Bytes, SocketAddr)>>>,
+    batch_recv_bufs: Arc<Mutex<Option<Vec<Vec<u8>>>>>,
+    batch_recv_supported: Arc<AtomicBool>,
 }
 
 impl KcpListener {
@@ -87,6 +93,9 @@ impl KcpListener {
             buf_pool,
             cleanup_task,
             closed,
+            pending_packets: Arc::new(Mutex::new(VecDeque::new())),
+            batch_recv_bufs: Arc::new(Mutex::new(None)),
+            batch_recv_supported: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -99,8 +108,71 @@ impl KcpListener {
 
     pub async fn accept(&self) -> io::Result<(Arc<KcpConnection>, SocketAddr)> {
         loop {
-            let mut buf = self.buf_pool.get();
+            // 1. Drain pending packets — drain all under lock, then process without holding it
+            {
+                let batch: Vec<(Bytes, SocketAddr)> = {
+                    let mut pending = self.pending_packets.lock();
+                    pending.drain(..).collect()
+                };
 
+                for (data, addr) in batch {
+                    if data.len() < 4 {
+                        continue;
+                    }
+
+                    let conv = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+                    let existing_conn = self.connections.get(&conv).map(|r| r.value().clone());
+
+                    if let Some(conn) = existing_conn {
+                        if conn.addr() == addr {
+                            conn.input_bytes(data).await.map_err(|e| {
+                                io::Error::other(e.to_string())
+                            })?;
+                            continue;
+                        }
+                        conn.close();
+                    }
+
+                    let conn = self.create_connection(conv, addr);
+                    conn.input_bytes(data).await.map_err(|e| {
+                        io::Error::other(e.to_string())
+                    })?;
+                    return Ok((conn, addr));
+                }
+            }
+
+            // 2. Try batch recv (non-blocking, only if transport supports it)
+            if self.batch_recv_supported.load(Ordering::Relaxed) {
+                let mut batch_bufs: Vec<Vec<u8>> = {
+                    let mut bufs = self.batch_recv_bufs.lock();
+                    bufs.get_or_insert_with(|| {
+                        (0..32).map(|_| vec![0u8; RECV_BUF_SIZE]).collect()
+                    }).clone()
+                };
+
+                let mut slots: Vec<crate::transport::BatchRecvSlot<'_>> = batch_bufs
+                    .iter_mut()
+                    .map(|b| crate::transport::BatchRecvSlot::new(b.as_mut_slice()))
+                    .collect();
+
+                match self.transport.try_recv_from_multi(&mut slots) {
+                    Ok(0) => {
+                        self.batch_recv_supported.store(false, Ordering::Relaxed);
+                    }
+                    Ok(n) => {
+                        let mut pending = self.pending_packets.lock();
+                        for slot in slots.iter().take(n) {
+                            let data = Bytes::copy_from_slice(&slot.buf[..slot.n]);
+                            pending.push_back((data, slot.addr));
+                        }
+                        continue;
+                    }
+                    Err(_) => {}
+                }
+            }
+
+            // 3. Single async recv (fallback)
+            let mut buf = self.buf_pool.get();
             let recv_result = tokio::select! {
                 r = self.transport.recv_from(&mut buf) => { r }
                 _ = self.closed.notified() => {
@@ -123,7 +195,6 @@ impl KcpListener {
             }
 
             let conv = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-
             let existing_conn = self.connections.get(&conv).map(|r| r.value().clone());
 
             if let Some(conn) = existing_conn {
@@ -311,8 +382,6 @@ mod tests {
         let test_data = b"hello batch";
         conn.send(test_data).await.unwrap();
 
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
         let mut buf = vec![0u8; 2048];
         let result = tokio::time::timeout(
             Duration::from_secs(2),
@@ -361,10 +430,10 @@ mod tests {
 
         assert_eq!(listener.connection_count(), 2);
 
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
 
-        listener.reaper.run(&listener.connections);
-
+        let removed = listener.reaper.run_with_cleanup(&listener.connections, |_| {});
+        assert!(removed > 0, "reaper should have removed expired connections");
         assert_eq!(listener.connection_count(), 0);
     }
 }

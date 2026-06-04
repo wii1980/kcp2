@@ -31,7 +31,7 @@ pedantic = "warn"
 # kcp2 兼容层（重新导出 kcp2-std）
 [package]
 name = "kcp2"
-version = "0.2.2"
+version = "0.2.3"
 edition.workspace = true
 exclude = ["publish.sh", "qa.sh", "scripts/", "ESP32_PORTING_GUIDE.md"]
 rust-version.workspace = true
@@ -48,9 +48,10 @@ default = ["fastack_conserve"]
 fastack_conserve = ["kcp2-std/fastack_conserve"]
 aead = ["kcp2-std/aead"]
 dtls = ["kcp2-std/dtls"]
+binger = ["kcp2-std/binger"]
 
 [dependencies]
-kcp2-std = { version = "0.1.3", path = "kcp2-std" }
+kcp2-std = { version = "0.1.4", path = "kcp2-std" }
 
 # 原始 benchmark 依赖
 [dev-dependencies]
@@ -58,12 +59,8 @@ rand = "0.8"
 criterion = { version = "0.5", features = ["html_reports"] }
 tokio = { version = "1", features = ["full"] }
 once_cell = "1"
-kcp2-core = { version = "0.1.3", path = "kcp2-core" }
-kcp2-std = { version = "0.1.3", path = "kcp2-std" }
-
-clap_lex = { version = "=1.0.1" }
-rayon-core = { version = "=1.12.1" }
-half = { version = "=2.4.1"}
+kcp2-core = { version = "0.1.4", path = "kcp2-core" }
+kcp2-std = { version = "0.1.4", path = "kcp2-std" }
 
 [[bench]]
 name = "kcp_benchmark"
@@ -75,6 +72,10 @@ harness = false
 
 [[bench]]
 name = "concurrent_stress"
+harness = false
+
+[[bench]]
+name = "transport_compare"
 harness = false
 
 [lints]

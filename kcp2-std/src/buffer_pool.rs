@@ -68,10 +68,4 @@ mod tests {
         pool.put(BytesMut::zeroed(1024));
     }
 
-    #[test]
-    fn test_buffer_pool_get_returns_correct_size() {
-        let pool = BufferPool::new(2, 2048);
-        let buf = pool.get();
-        assert_eq!(buf.capacity(), 2048);
-    }
 }

@@ -13,13 +13,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, watch};
 
-use kcp2_core::{Kcp, KcpError, KcpOutput, SendHandle, Result};
+use kcp2_core::{KcpError, KcpOutput, SendHandle, Result};
 
 use crate::crypto::KcpCrypto;
-use crate::transport::{KcpTransport, UdpTransport};
+use crate::transport::KcpTransport;
 
 mod actor;
 mod callback_actor;
@@ -56,6 +55,8 @@ pub(crate) struct ActorConfig {
     pub dead_link: u32,
     pub stream: bool,
     pub crypto: Option<Arc<dyn KcpCrypto>>,
+    pub channel_capacity: usize,
+    pub pending_send_cap: usize,
 }
 
 impl ActorConfig {
@@ -73,6 +74,8 @@ impl ActorConfig {
             dead_link: config.dead_link,
             stream: config.stream,
             crypto: config.crypto.clone(),
+            channel_capacity: config.channel_capacity,
+            pending_send_cap: config.pending_send_cap,
         }
     }
 }
@@ -82,7 +85,7 @@ impl<Output: KcpOutput + Send + 'static> AsyncKcp<Output> {
     ///
     /// 内部启动 Actor task，output 回调在 Actor 内通过收集器间接调用。
     pub fn new(conv: u32, output: Output) -> Self {
-        let (cmd_tx, cmd_rx) = mpsc::channel(64);
+        let (cmd_tx, cmd_rx) = mpsc::channel(16);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         // 为无 socket 模式创建 output callback wrapper
@@ -108,7 +111,7 @@ impl<Output: KcpOutput + Send + 'static> AsyncKcp<Output> {
         peer: SocketAddr,
         connected: bool,
     ) -> Self {
-        let (cmd_tx, cmd_rx) = mpsc::channel(64);
+        let (cmd_tx, cmd_rx) = mpsc::channel(actor_config.channel_capacity);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         let mut actor = KcpActor::new(
@@ -119,6 +122,7 @@ impl<Output: KcpOutput + Send + 'static> AsyncKcp<Output> {
             cmd_rx,
             shutdown_rx,
             actor_config.crypto.clone(),
+            actor_config.pending_send_cap,
         );
 
         // 应用配置
@@ -131,7 +135,9 @@ impl<Output: KcpOutput + Send + 'static> AsyncKcp<Output> {
         actor
             .kcp_mut()
             .set_wndsize(actor_config.sndwnd, actor_config.rcvwnd);
-        let _ = actor.kcp_mut().set_mtu(actor_config.mtu);
+        if let Err(e) = actor.kcp_mut().set_mtu(actor_config.mtu) {
+            log::error!("Failed to set MTU to {}: {e}", actor_config.mtu);
+        }
         actor.kcp_mut().set_rx_minrto(actor_config.rx_minrto);
         actor.kcp_mut().set_dead_link(actor_config.dead_link);
         actor.kcp_mut().set_stream(actor_config.stream);
@@ -147,56 +153,7 @@ impl<Output: KcpOutput + Send + 'static> AsyncKcp<Output> {
         }
     }
 
-    /// 创建绑定到 socket 的 AsyncKcp（向后兼容）
-    ///
-    /// 内部将 UdpSocket 包装为 UdpTransport。
-    #[allow(dead_code)]
-    pub(crate) fn new_with_socket(
-        actor_config: &ActorConfig,
-        socket: Arc<UdpSocket>,
-        peer: SocketAddr,
-        connected: bool,
-    ) -> Self {
-        let transport = Arc::new(UdpTransport::from_arc(socket));
-        Self::new_with_transport(actor_config, transport as Arc<dyn KcpTransport>, peer, connected)
-    }
-
     // ─── 公共 API（保持不变）────────────────────────────
-
-    pub fn set_nodelay(&self, _nodelay: bool, _interval: u32, _resend: u32, _nc: bool) {
-        log::warn!("set_nodelay called after construction, this is a no-op in Actor mode");
-    }
-
-    pub fn set_wndsize(&self, _sndwnd: u16, _rcvwnd: u16) {
-        log::warn!("set_wndsize called after construction, this is a no-op in Actor mode");
-    }
-
-    pub fn set_mtu(&self, _mtu: usize) -> Result<()> {
-        log::warn!("set_mtu called after construction, this is a no-op in Actor mode");
-        Ok(())
-    }
-
-    pub fn set_interval(&self, _interval: u32) {
-        log::warn!("set_interval called after construction, this is a no-op in Actor mode");
-    }
-
-    pub fn set_stream(&self, _stream: bool) {
-        log::warn!("set_stream called after construction, this is a no-op in Actor mode");
-    }
-
-    pub fn set_rx_minrto(&self, _minrto: u32) {
-        log::warn!("set_rx_minrto called after construction, this is a no-op in Actor mode");
-    }
-
-    pub fn set_dead_link(&self, _dead_link: u32) {
-        log::warn!("set_dead_link called after construction, this is a no-op in Actor mode");
-    }
-
-    pub fn set_maximum_resend_times(&self, _times: u32) {
-        log::warn!(
-            "set_maximum_resend_times called after construction, this is a no-op in Actor mode"
-        );
-    }
 
     pub async fn input(&self, data: &[u8]) -> Result<usize> {
         self.handle.input(data).await
@@ -276,14 +233,6 @@ impl<Output: KcpOutput + Send + 'static> AsyncKcp<Output> {
         Ok(data.len())
     }
 
-    pub async fn update(&self, _current: u32) {
-        // Actor 内部自动 update，此方法为空操作
-    }
-
-    pub async fn flush(&self) {
-        // Actor 内部在每次操作后自动 flush，此方法为空操作
-    }
-
     pub async fn wait_snd(&self) -> usize {
         self.handle.wait_snd().await
     }
@@ -296,18 +245,8 @@ impl<Output: KcpOutput + Send + 'static> AsyncKcp<Output> {
         self.handle.kill();
     }
 
-    pub fn notify(&self) -> Arc<tokio::sync::Notify> {
-        // 兼容旧 API，返回一个空 Notify（不再使用）
-        Arc::new(tokio::sync::Notify::new())
-    }
-
     pub async fn send_reconnect(&self) -> Result<()> {
         self.handle.send_reconnect().await
     }
 
-    pub fn inner(&self) -> Arc<parking_lot::RwLock<Kcp<Box<dyn KcpOutput + Send + Sync>>>> {
-        // 兼容旧 API — 不再返回真实的内部 Kcp
-        log::warn!("inner() is deprecated in Actor mode, returns empty Kcp");
-        Arc::new(parking_lot::RwLock::new(Kcp::new(0, Box::new(|_| {}))))
-    }
 }

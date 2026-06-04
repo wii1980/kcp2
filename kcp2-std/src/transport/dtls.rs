@@ -732,6 +732,12 @@ mod tests {
             .await
             .expect("server bind");
         let server_addr_resolved = server.local_addr().unwrap();
+
+        assert_eq!(server.overhead(), DEFAULT_DTLS_OVERHEAD, "server overhead");
+        assert!(!server.is_closed(), "server not closed initially");
+        assert_eq!(server.session_count(), 0, "initial session count");
+        assert!(server.local_addr().is_ok(), "server has local addr");
+
         let server = Arc::new(server);
 
         let client_cfg = DtlsConfig::client_psk(b"shared-secret", "kcp2")
@@ -739,6 +745,24 @@ mod tests {
         let client = DtlsClientTransport::connect(&server_addr_resolved.to_string(), client_cfg)
             .await
             .expect("client handshake");
+
+        assert_eq!(client.overhead(), DEFAULT_DTLS_OVERHEAD, "client overhead");
+        assert!(!client.is_closed(), "client not closed initially");
+        assert_eq!(client.remote_addr(), server_addr_resolved, "client remote addr");
+        assert!(client.local_addr().is_ok(), "client has local addr");
+
+        // Wait for server accept loop to register the session
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if server.session_count() == 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("server should have accepted session within 5s");
+        assert_eq!(server.session_count(), 1, "session count after client connect");
 
         // 客户端发送 → 服务端 recv_from
         let payload = b"hello dtls";
@@ -765,5 +789,10 @@ mod tests {
             .expect("client recv timeout")
             .expect("client recv error");
         assert_eq!(&cbuf[..n], pong);
+
+        // Test session management
+        assert!(server.close_session(peer), "close_session should succeed");
+        assert!(!server.close_session(peer), "close_session on closed session should return false");
+        assert_eq!(server.session_count(), 0, "session count after close");
     }
 }

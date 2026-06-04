@@ -380,9 +380,11 @@ mod tests {
         connector.set_wndsize(512, 512);
         connector.set_mtu(1200);
         connector.set_recv_buf_size(4096);
+        connector.set_timeout(Duration::from_secs(60));
 
         assert_eq!(connector.conv, Some(99));
         assert_eq!(connector.recv_buf_size, 4096);
+        assert_eq!(connector.config.timeout, Duration::from_secs(60));
     }
 
     #[test]
@@ -464,7 +466,16 @@ mod tests {
         assert!(session.is_alive().await);
 
         session.close().await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if !session.is_alive().await && session.is_closed() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("session should be closed within 2s");
         assert!(!session.is_alive().await);
         assert!(session.is_closed());
     }
@@ -480,5 +491,47 @@ mod tests {
 
         let result = connector.conv(1).connect().await;
         assert!(result.is_ok(), "from_socket connect should succeed: {:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn test_connect_with_handles() {
+        let addr = find_free_addr();
+        let connector = KcpConnector::new(&addr).unwrap().conv(1);
+        let result = connector.connect_with_handles().await;
+        assert!(result.is_ok(), "connect_with_handles should succeed: {:?}", result.err());
+
+        let (session, recv_handle, timeout_handle) = result.unwrap();
+        assert!(!recv_handle.is_finished(), "recv task should be running");
+        assert!(!timeout_handle.is_finished(), "timeout task should be running");
+        assert!(session.is_alive().await);
+
+        session.close().await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if session.is_closed() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("session should be closed within 2s");
+        assert!(session.is_closed());
+    }
+
+    #[tokio::test]
+    async fn test_from_transport() {
+        use crate::transport::{KcpTransport, UdpTransport};
+
+        let addr = find_free_addr();
+        let socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+        let transport: Arc<dyn KcpTransport> = Arc::new(UdpTransport::new(socket));
+        let config = KcpConfig::default().nodelay(true, 10, 2, false);
+
+        let connector = KcpConnector::from_transport(transport, &addr, config).unwrap();
+        assert_eq!(connector.remote_addr.to_string(), addr);
+
+        let result = connector.conv(1).connect().await;
+        assert!(result.is_ok(), "from_transport connect should succeed: {:?}", result.err());
     }
 }

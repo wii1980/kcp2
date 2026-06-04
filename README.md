@@ -15,6 +15,8 @@ A [KCP](https://github.com/skywind3000/kcp) protocol implementation in Rust, sup
 - **Connection management**: `KcpListener` for multiplexing, automatic expiry cleanup, Builder-pattern client
 - **Batch send**: `send_batch()` sends multiple messages in a single channel transaction, reducing round-trip overhead
 - **Memory pool**: Segment memory pool for reduced allocation overhead
+- **Low per-connection footprint**: ~3.1 KB per idle connection (down from ~17.4 KB), with lazy buffer allocation and tunable channel/buffer sizes
+- **Send backpressure**: `send_with_backpressure()` rejects sends when the pending segment count exceeds a configurable threshold
 - **Lock-free Output**: Uses lock-free `ArrayQueue` for KCP output collection
 - **Pluggable encryption**: AES-256-GCM / ChaCha20-Poly1305 per-packet encryption via `KcpCrypto` trait, feature-gated
 - **Pluggable transport**: `KcpTransport` trait decouples UDP sockets, supports DTLS / custom transports
@@ -536,6 +538,7 @@ let n = kcp.recv(&mut buf).unwrap();
 | Method | Description |
 |--------|-------------|
 | `send(data)` | Send data |
+| `send_with_backpressure(data)` | Send with backpressure check (returns `Err(SendBackpressure)` when overloaded) |
 | `recv(buf)` | Receive data (blocking) |
 | `try_recv(buf)` | Non-blocking receive |
 | `send_and_wait_ack(data)` | Send and wait for ACK |
@@ -579,6 +582,9 @@ let n = kcp.recv(&mut buf).unwrap();
 | `dead_link` | `u32` | `10` | Max retransmits before dead link |
 | `stream` | `bool` | `false` | Stream mode |
 | `timeout` | `Duration` | `30s` | Connection timeout |
+| `channel_capacity` | `usize` | `16` | mpsc channel capacity per connection (min 4) |
+| `max_wait_snd` | `usize` | `0` | Backpressure threshold for pending send segments (0=disabled) |
+| `pending_send_cap` | `usize` | `16` | Pending send buffer capacity |
 | `crypto()` | builder | `None` | Inject `KcpCrypto` implementation (feature `aead`), auto-deducts MTU overhead |
 
 ### Scenario Configuration Recommendations
@@ -688,6 +694,7 @@ When `stream` mode is enabled (`KcpConfig::stream(true)`), KCP coalesces consecu
 | `Timeout` | Operation timed out |
 | `BufferTooSmall` | Insufficient buffer size |
 | `TooManyFragments` | Data too large for single send (exceeds `WND_RCV × MSS`) |
+| `SendBackpressure` | Too many pending send segments (returned by `send_with_backpressure()`) |
 
 ## Examples
 

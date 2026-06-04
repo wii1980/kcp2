@@ -89,8 +89,8 @@ impl<Output: KcpOutput> Kcp<Output> {
             rcv_queue: VecDeque::new(),
             snd_buf: Vec::new(),
             rcv_buf: BTreeMap::new(),
-            acklist: Vec::with_capacity(256),
-            buffer: vec![0u8; (MTU_DEF + OVERHEAD) * 3],
+            acklist: Vec::with_capacity(16),
+            buffer: Vec::new(),
             fastresend: 0,
             fastlimit: FASTACK_LIMIT,
             nocwnd: false,
@@ -680,7 +680,10 @@ impl<Output: KcpOutput> Kcp<Output> {
                 CMD_WASK => {
                     self.probe |= ASK_TELL;
                 }
-                CMD_WINS => {}
+                CMD_WINS => {
+                    // Window probe response — window info is already tracked via the wnd field
+                    // in each segment header. No additional action needed (matches original KCP behavior).
+                }
                 CMD_RECONNECT => {
                     self.handle_reconnect(seg.wnd);
                 }
@@ -725,12 +728,17 @@ impl<Output: KcpOutput> Kcp<Output> {
         self.input(data)
     }
 
-    #[allow(unused_assignments)]
     /// 不推荐直接调用。请使用 `update()`，内部会自动在合适的时机执行 flush。
     #[doc(hidden)]
     pub fn flush(&mut self) {
         if !self.updated {
             return;
+        }
+
+        // Lazy buffer allocation: defer until first actual flush
+        let buf_cap = (self.mtu + OVERHEAD) * 3;
+        if self.buffer.len() != buf_cap {
+            self.buffer = vec![0u8; buf_cap];
         }
 
         let current = self.current;
@@ -742,12 +750,10 @@ impl<Output: KcpOutput> Kcp<Output> {
 
         let mut ptr = 0;
 
-        #[allow(unused_assignments)]
         macro_rules! emit {
             ($ptr:expr) => {
                 if $ptr > 0 {
                     (self.output)(&self.buffer[..$ptr]);
-                    $ptr = 0;
                 }
             };
         }
@@ -757,10 +763,11 @@ impl<Output: KcpOutput> Kcp<Output> {
             let (sn, ts) = self.acklist[i];
             if ptr + OVERHEAD > self.mtu {
                 emit!(ptr);
+                ptr = 0;
             }
             seg.sn = sn;
             seg.ts = ts;
-            seg.encode_to_slice(&mut self.buffer[ptr..]).unwrap();
+            seg.encode_to_slice(&mut self.buffer[ptr..]).expect("ACK segment encode: buffer guaranteed to fit by MTU check");
             ptr += OVERHEAD;
         }
         self.acklist.clear();
@@ -789,8 +796,9 @@ impl<Output: KcpOutput> Kcp<Output> {
             seg.cmd = CMD_WASK;
             if ptr + OVERHEAD > self.mtu {
                 emit!(ptr);
+                ptr = 0;
             }
-            seg.encode_to_slice(&mut self.buffer[ptr..]).unwrap();
+            seg.encode_to_slice(&mut self.buffer[ptr..]).expect("WASK segment encode: buffer guaranteed to fit by MTU check");
             ptr += OVERHEAD;
         }
 
@@ -798,8 +806,9 @@ impl<Output: KcpOutput> Kcp<Output> {
             seg.cmd = CMD_WINS;
             if ptr + OVERHEAD > self.mtu {
                 emit!(ptr);
+                ptr = 0;
             }
-            seg.encode_to_slice(&mut self.buffer[ptr..]).unwrap();
+            seg.encode_to_slice(&mut self.buffer[ptr..]).expect("WINS segment encode: buffer guaranteed to fit by MTU check");
             ptr += OVERHEAD;
         }
 
@@ -885,9 +894,10 @@ impl<Output: KcpOutput> Kcp<Output> {
             let need = OVERHEAD + seg.data.len();
             if ptr + need > self.mtu {
                 emit!(ptr);
+                ptr = 0;
             }
 
-            seg.encode_to_slice(&mut self.buffer[ptr..]).unwrap();
+            seg.encode_to_slice(&mut self.buffer[ptr..]).expect("PUSH segment encode: buffer guaranteed to fit by MTU check");
             ptr += need;
 
             if seg.xmit >= self.dead_link && self.state != LinkState::Dead {
@@ -976,5 +986,167 @@ impl<Output: KcpOutput> Kcp<Output> {
 
         let flush_diff = time_diff(flush_target, current) as u32;
         min(min(tm_packet, flush_diff), self.interval)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::rc::Rc;
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use core::cell::RefCell;
+
+    #[test]
+    fn test_kcp_new_basic() {
+        let output = |_: &[u8]| {};
+        let kcp = Kcp::new(0x1234_5678, output);
+        assert_eq!(kcp.conv(), 0x1234_5678);
+        assert!(!kcp.is_dead());
+        assert_eq!(kcp.wait_snd(), 0);
+    }
+
+    #[test]
+    fn test_kcp_send_and_wait_snd() {
+        let output = |_: &[u8]| {};
+        let mut kcp = Kcp::new(42, output);
+        assert_eq!(kcp.wait_snd(), 0);
+        kcp.send(b"hello").unwrap();
+        assert!(kcp.wait_snd() > 0);
+    }
+
+    #[test]
+    fn test_kcp_send_empty_data() {
+        let output = |_: &[u8]| {};
+        let mut kcp = Kcp::new(42, output);
+        let result = kcp.send(b"");
+        assert!(matches!(result, Err(KcpError::EmptyData)));
+    }
+
+    #[test]
+    fn test_kcp_recv_queue_empty() {
+        let output = |_: &[u8]| {};
+        let mut kcp = Kcp::new(42, output);
+        let mut buf = [0u8; 1024];
+        let result = kcp.recv(&mut buf);
+        assert!(matches!(result, Err(KcpError::RecvQueueEmpty)));
+    }
+
+    #[test]
+    fn test_kcp_loopback() {
+        let buf: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let buf_clone = buf.clone();
+
+        let mut kcp1 = Kcp::new(0x1122_3344, move |data: &[u8]| {
+            buf_clone.borrow_mut().push(data.to_vec());
+        });
+        let mut kcp2 = Kcp::new(0x1122_3344, |_: &[u8]| {
+            // kcp2 output goes nowhere in this test
+        });
+
+        kcp1.send(b"hello kcp core").unwrap();
+        kcp1.update(0);
+        kcp1.flush();
+
+        for pkt in buf.borrow_mut().drain(..) {
+            kcp2.input(&pkt).unwrap();
+        }
+
+        let mut recv_buf = [0u8; 1024];
+        let n = kcp2.recv(&mut recv_buf).unwrap();
+        assert_eq!(&recv_buf[..n], b"hello kcp core");
+    }
+
+    #[test]
+    fn test_kcp_input_too_short() {
+        let output = |_: &[u8]| {};
+        let mut kcp = Kcp::new(42, output);
+        let result = kcp.input(&[0u8; 10]);
+        assert!(matches!(result, Err(KcpError::InputTooShort { .. })));
+    }
+
+    #[test]
+    fn test_kcp_buffer_too_small() {
+        let output = |_: &[u8]| {};
+        let mut kcp = Kcp::new(42, output);
+
+        let data = b"test message";
+        let mut seg = vec![0u8; 24 + data.len()];
+        seg[0..4].copy_from_slice(&42u32.to_le_bytes());
+        seg[4] = 81;
+        seg[6..8].copy_from_slice(&128u16.to_le_bytes());
+        seg[20..24].copy_from_slice(&(data.len() as u32).to_le_bytes());
+        seg[24..].copy_from_slice(data);
+
+        kcp.input(&seg).unwrap();
+
+        let mut small_buf = [0u8; 2];
+        let result = kcp.recv(&mut small_buf);
+        assert!(matches!(result, Err(KcpError::BufferTooSmall { .. })));
+    }
+
+    #[test]
+    fn test_kcp_dead_link() {
+        let output = |_: &[u8]| {};
+        let mut kcp = Kcp::new(42, output);
+        assert!(!kcp.is_dead());
+
+        kcp.set_dead_link(2);
+        kcp.send(b"test").unwrap();
+
+        for i in 0..5 {
+            kcp.update(i * 100);
+        }
+
+        assert!(kcp.is_dead());
+    }
+
+    #[test]
+    fn test_kcp_send_too_many_fragments() {
+        let output = |_: &[u8]| {};
+        let mut kcp = Kcp::new(42, output);
+        kcp.set_mtu(100).unwrap();
+
+        let big = vec![0u8; 20000];
+        let result = kcp.send(&big);
+        assert!(matches!(result, Err(KcpError::TooManyFragments { .. })));
+    }
+
+    #[test]
+    fn test_kcp_get_conv() {
+        let mut seg = Segment::new();
+        seg.conv = 0x1234_5678;
+        seg.cmd = 81;
+        seg.data = vec![1, 2, 3];
+
+        let mut buf = [0u8; 256];
+        let written = seg.encode_to_slice(&mut buf).unwrap();
+
+        let conv = Kcp::<fn(&[u8])>::get_conv(&buf[..written]);
+        assert_eq!(conv, Some(0x1234_5678));
+    }
+
+    #[test]
+    fn test_kcp_state() {
+        let output = |_: &[u8]| {};
+        let kcp = Kcp::new(42, output);
+        assert_eq!(kcp.state(), 0);
+    }
+
+    #[test]
+    fn test_kcp_set_mtu() {
+        let output = |_: &[u8]| {};
+        let mut kcp = Kcp::new(42, output);
+        kcp.set_mtu(1000).unwrap();
+        let result = kcp.set_mtu(10);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_kcp_send_max_size() {
+        let output = |_: &[u8]| {};
+        let mut kcp = Kcp::new(42, output);
+        kcp.send(&vec![0u8; 65535]).unwrap();
+        assert!(kcp.wait_snd() > 0);
     }
 }

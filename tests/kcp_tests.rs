@@ -175,7 +175,12 @@ async fn test_async_kcp_no_deadlock_in_output_callback() {
     let result = kcp.send(b"test").await;
     assert!(result.is_ok());
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    for _ in 0..2000 {
+        if *callback_called.lock().unwrap() {
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+    }
 
     let called = *callback_called.lock().unwrap();
     assert!(called, "Output callback should have been called");
@@ -212,6 +217,7 @@ fn test_fastack_conserve_feature() {
     simulate_tick(&mut kcp1, 0);
 
     let packets = channel2.drain();
+    assert!(!packets.is_empty(), "should have sent data packets");
     for packet in &packets {
         kcp2.input(packet).unwrap();
     }
@@ -219,6 +225,7 @@ fn test_fastack_conserve_feature() {
     simulate_tick(&mut kcp2, 10);
 
     let acks = channel1.drain();
+    assert!(!acks.is_empty(), "should have ACK packets");
     for ack in &acks {
         kcp1.input(ack).unwrap();
     }
@@ -300,6 +307,7 @@ fn test_window_probe() {
 
     simulate_tick(&mut kcp1, 20);
     let _probes = channel2.drain();
+    assert!(!kcp1.is_dead(), "kcp should survive window probe scenario");
 }
 
 #[test]
@@ -314,6 +322,9 @@ fn test_time_diff_wrapping() {
 
     kcp.update(2000);
     kcp.flush();
+
+    assert!(!kcp.is_dead(), "kcp should not be dead after time diff wrapping");
+    kcp.send(b"still alive").unwrap();
 }
 
 #[test]
@@ -417,6 +428,8 @@ fn test_kcp_set_wndsize() {
 
     kcp.set_wndsize(64, 64);
     kcp.send(b"test").unwrap();
+    assert!(kcp.wait_snd() > 0);
+    assert!(!kcp.is_dead());
 }
 
 #[test]
@@ -426,6 +439,8 @@ fn test_kcp_set_nodelay() {
 
     kcp.set_nodelay(true, 20, 2, true);
     kcp.send(b"test").unwrap();
+    assert!(kcp.wait_snd() > 0);
+    assert!(!kcp.is_dead());
 }
 
 #[test]
@@ -435,6 +450,8 @@ fn test_kcp_set_interval() {
 
     kcp.set_interval(100);
     kcp.send(b"test").unwrap();
+    assert!(kcp.wait_snd() > 0);
+    assert!(!kcp.is_dead());
 }
 
 #[test]
@@ -444,6 +461,8 @@ fn test_kcp_set_rx_minrto() {
 
     kcp.set_rx_minrto(100);
     kcp.send(b"test").unwrap();
+    assert!(kcp.wait_snd() > 0);
+    assert!(!kcp.is_dead());
 }
 
 #[test]
@@ -453,6 +472,8 @@ fn test_kcp_set_dead_link() {
 
     kcp.set_dead_link(5);
     kcp.send(b"test").unwrap();
+    assert!(kcp.wait_snd() > 0);
+    assert!(!kcp.is_dead());
 }
 
 #[test]
@@ -482,6 +503,8 @@ fn test_kcp_reset_rto() {
 
     kcp.reset_rto();
     kcp.send(b"test").unwrap();
+    assert!(kcp.wait_snd() > 0);
+    assert!(!kcp.is_dead());
 }
 
 #[test]
@@ -599,6 +622,7 @@ fn test_kcp_send_max_size() {
 
     let max_data = vec![0u8; 65535];
     kcp.send(&max_data).unwrap();
+    assert!(kcp.wait_snd() > 0, "data should be queued for send");
 }
 
 #[test]
@@ -609,6 +633,7 @@ fn test_kcp_stream_mode_large_data() {
 
     let large_data = vec![0u8; 10000];
     kcp.send(&large_data).unwrap();
+    assert!(kcp.wait_snd() > 0);
 }
 
 #[test]
@@ -619,6 +644,7 @@ fn test_kcp_non_stream_mode_large_data() {
 
     let large_data = vec![0u8; 10000];
     kcp.send(&large_data).unwrap();
+    assert!(kcp.wait_snd() > 0);
 }
 
 #[test]
@@ -628,6 +654,7 @@ fn test_kcp_update_large_time() {
 
     kcp.update(1_000_000);
     kcp.flush();
+    assert!(!kcp.is_dead(), "kcp should handle large time updates");
 }
 
 #[test]
@@ -655,6 +682,12 @@ fn test_kcp_multiple_connections() {
         kcp.update(0);
         kcp.flush();
     }
+
+    for (i, kcp) in connections.iter().enumerate() {
+        assert_eq!(kcp.conv(), 0x1000 + i as u32, "conv should match");
+        assert!(kcp.wait_snd() > 0, "connection {} should have pending data", i);
+        assert!(!kcp.is_dead(), "connection {} should not be dead", i);
+    }
 }
 
 #[test]
@@ -674,7 +707,9 @@ fn test_kcp_async_multiple_connections() {
             connections.push(kcp);
         }
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
     });
 }
 

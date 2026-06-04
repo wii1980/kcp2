@@ -15,6 +15,8 @@ Rust 实现的 [KCP](https://github.com/skywind3000/kcp) 协议，支持 std / n
 - **连接管理**：`KcpListener` 多路分发、自动过期清理、Builder 模式客户端
 - **批量发送**：`send_batch()` 一次 channel 通信发送多条数据，减少往返开销
 - **内存池**：Segment 内存池复用，减少分配开销
+- **低每连接内存占用**：空闲连接仅 ~3.1 KB（优化前 ~17.4 KB），缓冲区延迟分配，channel/buffer 大小可调
+- **发送背压**：`send_with_backpressure()` 在待发送分段数超过阈值时拒绝发送
 - **无锁 Output**：使用 lock-free `ArrayQueue` 收集 KCP output
 - **可插拔加密**：通过 `KcpCrypto` trait 支持 AES-256-GCM / ChaCha20-Poly1305 整包加密，feature-gated
 - **可插拔传输层**：通过 `KcpTransport` trait 解耦 UDP socket，支持 DTLS / 自定义传输层
@@ -536,6 +538,7 @@ let n = kcp.recv(&mut buf).unwrap();
 | 方法 | 说明 |
 |------|------|
 | `send(data)` | 发送数据 |
+| `send_with_backpressure(data)` | 带背压检查的发送（过载时返回 `Err(SendBackpressure)`） |
 | `recv(buf)` | 接收数据（等待） |
 | `try_recv(buf)` | 非阻塞接收 |
 | `send_and_wait_ack(data)` | 发送并等待 ACK |
@@ -579,6 +582,9 @@ let n = kcp.recv(&mut buf).unwrap();
 | `dead_link` | `u32` | `10` | 最大重传次数 |
 | `stream` | `bool` | `false` | 流模式 |
 | `timeout` | `Duration` | `30s` | 连接超时 |
+| `channel_capacity` | `usize` | `16` | 每连接 mpsc channel 容量（最小 4） |
+| `max_wait_snd` | `usize` | `0` | 发送背压阈值，待发送分段数上限（0=禁用） |
+| `pending_send_cap` | `usize` | `16` | 待发送缓冲区容量 |
 | `crypto()` | builder | `None` | 注入 `KcpCrypto` 实现（feature `aead`），自动扣除 MTU overhead |
 
 ### 场景配置建议
@@ -688,6 +694,7 @@ if let Err(e) = session.send(b"important data") {
 | `Timeout` | 操作超时 |
 | `BufferTooSmall` | 缓冲区不足 |
 | `TooManyFragments` | 数据过大，超出单次 send 上限（`WND_RCV × MSS`） |
+| `SendBackpressure` | 待发送分段数过多（由 `send_with_backpressure()` 返回） |
 
 ## 示例
 

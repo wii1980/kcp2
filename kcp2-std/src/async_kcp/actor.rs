@@ -14,11 +14,11 @@ use kcp2_core::{Kcp, KcpOutput, current, KcpError, Result};
 
 use super::cmd::{KcpCmd, PendingWaitAck};
 use crate::crypto::KcpCrypto;
-use crate::transport::KcpTransport;
+use crate::transport::{BatchSendResult, KcpTransport};
 
-const OUTPUT_QUEUE_CAPACITY: usize = 512;
-const OUTPUT_POOL_CAPACITY: usize = 64;
-const PENDING_SEND_CAP: usize = 64;
+const OUTPUT_QUEUE_CAPACITY: usize = 32;
+const OUTPUT_POOL_CAPACITY: usize = 16;
+const DEFAULT_PENDING_SEND_CAP: usize = 64;
 
 /// KCP output 收集器 — flush 时将数据包收集到锁无关的 ArrayQueue，使用 BytesMut 池减少分配
 type OutputCollector = Box<dyn Fn(&[u8]) + Send + Sync>;
@@ -53,19 +53,16 @@ pub(crate) struct KcpActor {
     collected: Arc<ArrayQueue<BytesMut>>,
     output_pool: Arc<ArrayQueue<BytesMut>>,
     crypto: Option<Arc<dyn KcpCrypto>>,
-    /// 待处理的 recv 请求
     pending_recv: Option<oneshot::Sender<Result<BytesMut>>>,
-    /// 待处理的 wait_ack 请求
     pending_wait_acks: Vec<PendingWaitAck>,
-    /// 待处理的 wait_all_sent 请求
     pending_wait_all: Vec<oneshot::Sender<Result<()>>>,
-    /// WouldBlock 时暂存的重试包
     pending_send: VecDeque<Vec<u8>>,
-    /// recv 用的临时缓冲区
+    pending_send_cap: usize,
     recv_tmp: BytesMut,
 }
 
 impl KcpActor {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         conv: u32,
         transport: Arc<dyn KcpTransport>,
@@ -74,6 +71,7 @@ impl KcpActor {
         cmd_rx: mpsc::Receiver<KcpCmd>,
         shutdown_rx: watch::Receiver<bool>,
         crypto: Option<Arc<dyn KcpCrypto>>,
+        pending_send_cap: usize,
     ) -> Self {
         let output_pool = Arc::new(ArrayQueue::new(OUTPUT_POOL_CAPACITY));
         let (collector, collected) = make_output_collector(output_pool.clone());
@@ -94,7 +92,8 @@ impl KcpActor {
             pending_wait_acks: Vec::new(),
             pending_wait_all: Vec::new(),
             pending_send: VecDeque::new(),
-            recv_tmp: BytesMut::with_capacity(2048),
+            pending_send_cap: if pending_send_cap > 0 { pending_send_cap } else { DEFAULT_PENDING_SEND_CAP },
+            recv_tmp: BytesMut::with_capacity(128),
         }
     }
 
@@ -148,22 +147,6 @@ impl KcpActor {
                 let result = self.kcp.send(&data);
                 self.flush_and_drain();
                 let _ = ack.send(result);
-            }
-
-            KcpCmd::SendBatch { data, ack } => {
-                self.kcp.update(current());
-                let mut total_sent = 0usize;
-                for item in &data {
-                    match self.kcp.send(item) {
-                        Ok(n) => total_sent += n,
-                        Err(e) => {
-                            let _ = ack.send(Err(e));
-                            return false;
-                        }
-                    }
-                }
-                self.flush_and_drain();
-                let _ = ack.send(Ok(total_sent));
             }
 
             KcpCmd::Input { data } => {
@@ -318,6 +301,78 @@ impl KcpActor {
     }
 
     fn drain_output(&mut self) {
+        if self.transport.supports_batch_send() {
+            self.drain_output_batch();
+        } else {
+            self.drain_output_per_packet();
+        }
+    }
+
+    fn drain_output_batch(&mut self) {
+        let mut payloads: Vec<Vec<u8>> = Vec::new();
+        let mut orig_pkts: Vec<BytesMut> = Vec::new();
+
+        while let Some(pkt) = self.collected.pop() {
+            let payload: Vec<u8> = if let Some(ref crypto) = self.crypto {
+                crypto.encrypt(self.kcp.conv(), &pkt)
+            } else {
+                pkt.to_vec()
+            };
+            orig_pkts.push(pkt);
+            payloads.push(payload);
+        }
+
+        if payloads.is_empty() {
+            return;
+        }
+
+        let slices: Vec<&[u8]> = payloads.iter().map(Vec::as_slice).collect();
+        let result = if self.connected {
+            self.transport.try_send_batch_connected(&slices)
+        } else {
+            self.transport.try_send_batch_to(&slices, self.peer)
+        };
+
+        match result {
+            Ok(BatchSendResult::All(_)) => {
+                for pkt in orig_pkts {
+                    let _ = self.output_pool.push(pkt);
+                }
+            }
+            Ok(BatchSendResult::Partial { sent, .. }) => {
+                for pkt in orig_pkts.into_iter().take(sent) {
+                    let _ = self.output_pool.push(pkt);
+                }
+                for payload in payloads.into_iter().skip(sent) {
+                    if self.pending_send.len() < self.pending_send_cap {
+                        self.pending_send.push_back(payload);
+                    } else {
+                        log::warn!("KCP pending_send full, dropping packet");
+                    }
+                }
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                for payload in payloads {
+                    if self.pending_send.len() < self.pending_send_cap {
+                        self.pending_send.push_back(payload);
+                    } else {
+                        log::warn!("KCP pending_send full, dropping packet");
+                    }
+                }
+                for pkt in orig_pkts {
+                    let _ = self.output_pool.push(pkt);
+                }
+            }
+            Err(e) => {
+                log::warn!("KCP batch send error: {}", e);
+                for pkt in orig_pkts {
+                    let _ = self.output_pool.push(pkt);
+                }
+            }
+        }
+    }
+
+    fn drain_output_per_packet(&mut self) {
         while let Some(pkt) = self.collected.pop() {
             let payload: Vec<u8> = if let Some(ref crypto) = self.crypto {
                 crypto.encrypt(self.kcp.conv(), &pkt)
@@ -331,11 +386,10 @@ impl KcpActor {
             };
             match result {
                 Ok(_) => {
-                    // Return BytesMut to pool for reuse
                     let _ = self.output_pool.push(pkt);
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    if self.pending_send.len() < PENDING_SEND_CAP {
+                    if self.pending_send.len() < self.pending_send_cap {
                         self.pending_send.push_back(payload);
                     } else {
                         log::warn!("KCP pending_send full, dropping packet");
@@ -352,6 +406,43 @@ impl KcpActor {
 
     /// 重试暂存的 WouldBlock 包
     fn retry_pending(&mut self) {
+        if self.pending_send.is_empty() {
+            return;
+        }
+
+        if self.transport.supports_batch_send() {
+            self.retry_pending_batch();
+        } else {
+            self.retry_pending_per_packet();
+        }
+    }
+
+    fn retry_pending_batch(&mut self) {
+        let total = self.pending_send.len().min(OUTPUT_QUEUE_CAPACITY);
+        let items: Vec<&[u8]> = self.pending_send.iter().take(total).map(Vec::as_slice).collect();
+
+        let result = if self.connected {
+            self.transport.try_send_batch_connected(&items)
+        } else {
+            self.transport.try_send_batch_to(&items, self.peer)
+        };
+
+        match result {
+            Ok(BatchSendResult::All(_)) => {
+                self.pending_send.drain(..total);
+            }
+            Ok(BatchSendResult::Partial { sent, .. }) => {
+                self.pending_send.drain(..sent);
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
+            Err(e) => {
+                log::warn!("KCP pending batch send error: {}", e);
+                self.pending_send.pop_front();
+            }
+        }
+    }
+
+    fn retry_pending_per_packet(&mut self) {
         while !self.pending_send.is_empty() {
             let pkt = &self.pending_send[0];
             let result = if self.connected {
@@ -462,7 +553,12 @@ impl KcpActor {
 
     /// 使用 ikcp_check 计算下次 update 时间
     fn calc_next_update(&self) -> tokio::time::Instant {
-        let delay_ms = self.kcp.check(current());
+        let now_ms = current();
+        let next_update_ms = self.kcp.check(now_ms);
+        // check() returns an absolute timestamp (ms since epoch), not a delay.
+        // When update is needed immediately, it returns `current`.
+        // Convert to a Duration relative to now.
+        let delay_ms = next_update_ms.saturating_sub(now_ms);
         tokio::time::Instant::now() + Duration::from_millis(delay_ms as u64)
     }
 }

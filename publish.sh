@@ -116,8 +116,10 @@ if ! $SKIP_CHECK; then
 	ok "cargo check 通过"
 
 	header "2. cargo test"
-	cargo test --workspace --exclude kcp2-embassy --all-features || die "cargo test 失败"
-	ok "cargo test 通过 (70 tests)"
+	cargo test --workspace --exclude kcp2-embassy || die "cargo test (default) 失败"
+	cargo test --workspace --exclude kcp2-embassy --features aead || die "cargo test (aead) 失败"
+	cargo test --workspace --exclude kcp2-embassy --features dtls || die "cargo test (dtls) 失败"
+	ok "cargo test 通过 (default + aead + dtls)"
 
 	header "3. cargo clippy"
 	cargo clippy --workspace --exclude kcp2-embassy --all-targets -- \

@@ -59,8 +59,36 @@ async fn test_crypto_echo() {
     let msg = b"hello encrypted kcp!";
     conn.send(msg).await.unwrap();
 
-    // 等待数据到达
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // 服务端接收加密数据并验证解密正确
+    let mut recv_buf = vec![0u8; 2048];
+    let recv_result = tokio::time::timeout(
+        Duration::from_secs(3),
+        listener.recv_from(&mut recv_buf),
+    )
+    .await
+    .expect("server recv_from timeout")
+    .expect("server recv_from error");
+    let (n, server_conn, _addr) = recv_result;
+    assert_eq!(
+        &recv_buf[..n],
+        msg,
+        "server should receive decrypted plaintext"
+    );
+
+    // 服务端 echo 回客户端
+    server_conn.send(&recv_buf[..n]).await.unwrap();
+
+    // 客户端接收 echo 并验证
+    let mut client_buf = vec![0u8; 2048];
+    let n = tokio::time::timeout(Duration::from_secs(3), conn.recv(&mut client_buf))
+        .await
+        .expect("client recv timeout")
+        .expect("client recv error");
+    assert_eq!(
+        &client_buf[..n],
+        msg,
+        "client should receive echo back"
+    );
 }
 
 /// 验证密钥不匹配时数据不可读
@@ -77,7 +105,7 @@ async fn test_crypto_key_mismatch() {
         .crypto(crypto1)
         .nodelay(true, 10, 2, true)
         .wndsize(256, 256);
-    let _listener = KcpListener::bind_with_config(&addr, server_config)
+    let listener = KcpListener::bind_with_config(&addr, server_config)
         .await
         .unwrap();
 
@@ -95,10 +123,26 @@ async fn test_crypto_key_mismatch() {
         .unwrap();
 
     let conn = session.connection();
-    conn.send(b"should not be readable").await.unwrap();
 
-    // 等待超时（密钥不匹配，数据无法正确解密）
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    // 服务端创建连接接收客户端数据
+    let peer_addr = conn.addr();
+    listener.create_connection(1, peer_addr);
+
+    let msg = b"should not be readable";
+    conn.send(msg).await.unwrap();
+
+    // 密钥不匹配：服务端无法解密 -> KCP input 静默丢弃，连接会因超时死亡
+    let mut buf = vec![0u8; 2048];
+    let recv_result = tokio::time::timeout(
+        Duration::from_secs(2),
+        listener.recv_from(&mut buf),
+    )
+    .await;
+
+    assert!(
+        recv_result.is_err(),
+        "server should NOT receive readable data with mismatched keys (decrypt fails silently, kcp input dropped)"
+    );
 }
 
 /// 验证加密后 wire 数据与明文不同

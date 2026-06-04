@@ -228,6 +228,15 @@ mod tests {
     }
 
     #[test]
+    fn test_chacha20_overhead() {
+        let key = ChaCha20Poly1305Crypto::generate_key();
+        let crypto = ChaCha20Poly1305Crypto::new(&key);
+        let encrypted = crypto.encrypt(1, &[0u8; 100]);
+        assert_eq!(encrypted.len(), 100 + crypto.overhead());
+        assert_eq!(crypto.overhead(), 32);
+    }
+
+    #[test]
     fn test_unique_nonces() {
         let key = Aes256GcmCrypto::generate_key();
         let crypto = Aes256GcmCrypto::new(&key);

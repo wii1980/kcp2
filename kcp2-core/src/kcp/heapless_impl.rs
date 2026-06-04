@@ -54,7 +54,7 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
     /// 创建并预填充 buffer，避免 encode_to_slice 时 panic
     fn new_buffer() -> HeaplessVec<u8, 4488> {
         let mut v = HeaplessVec::new();
-        v.extend_from_slice(&[0u8; 4488]).unwrap();
+        v.extend_from_slice(&[0u8; 4488]).expect("heapless buffer: fixed-size Vec pre-allocated for 4488 bytes");
         v
     }
 
@@ -661,7 +661,10 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
                 CMD_WASK => {
                     self.probe |= ASK_TELL;
                 }
-                CMD_WINS => {}
+                CMD_WINS => {
+                    // Window probe response — window info is already tracked via the wnd field
+                    // in each segment header. No additional action needed (matches original KCP behavior).
+                }
                 CMD_RECONNECT => {
                     self.handle_reconnect(seg.wnd);
                 }
@@ -720,7 +723,7 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
             }
             seg.sn = sn;
             seg.ts = ts;
-            seg.encode_to_slice(&mut self.buffer[ptr..]).unwrap();
+            seg.encode_to_slice(&mut self.buffer[ptr..]).expect("ACK segment encode: buffer guaranteed to fit by MTU check");
             ptr += OVERHEAD;
         }
 
@@ -750,7 +753,7 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
                 self.output(&self.buffer[..ptr]);
                 ptr = 0;
             }
-            seg.encode_to_slice(&mut self.buffer[ptr..]).unwrap();
+            seg.encode_to_slice(&mut self.buffer[ptr..]).expect("WASK segment encode: buffer guaranteed to fit by MTU check");
             ptr += OVERHEAD;
         }
 
@@ -760,7 +763,7 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
                 self.output(&self.buffer[..ptr]);
                 ptr = 0;
             }
-            seg.encode_to_slice(&mut self.buffer[ptr..]).unwrap();
+            seg.encode_to_slice(&mut self.buffer[ptr..]).expect("WINS segment encode: buffer guaranteed to fit by MTU check");
             ptr += OVERHEAD;
         }
 
@@ -850,7 +853,7 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
                 ptr = 0;
             }
 
-            seg.encode_to_slice(&mut self.buffer[ptr..]).unwrap();
+            seg.encode_to_slice(&mut self.buffer[ptr..]).expect("PUSH segment encode: buffer guaranteed to fit by MTU check");
             ptr += need;
 
             if seg.xmit >= self.dead_link && self.state != LinkState::Dead {

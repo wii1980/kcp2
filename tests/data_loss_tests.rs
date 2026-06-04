@@ -12,7 +12,6 @@
 )]
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use kcp2::{AsyncKcp, Kcp, KcpError};
 
@@ -134,7 +133,9 @@ async fn test_async_kcp_recv_truncates_large_message() {
     kcp_a.send(&data).await.unwrap();
 
     // Wait for Actor to process the send and produce output
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
 
     // Route A's output to B's input
     let packets: Vec<Vec<u8>> = channel_ab.lock().unwrap().drain(..).collect();
@@ -143,7 +144,9 @@ async fn test_async_kcp_recv_truncates_large_message() {
     }
 
     // Wait for B's Actor to process the input
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
 
     // B receives with a 50-byte buffer
     let mut small_buf = vec![0u8; 50];

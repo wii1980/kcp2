@@ -23,8 +23,6 @@ pub struct EmbKcpConfig {
     pub stream: bool,
     /// 连接超时（毫秒）
     pub timeout_ms: u64,
-    /// update 间隔（毫秒）
-    pub update_interval_ms: u64,
 }
 
 impl Default for EmbKcpConfig {
@@ -41,7 +39,6 @@ impl Default for EmbKcpConfig {
             dead_link: 10,
             stream: false,
             timeout_ms: 30_000,
-            update_interval_ms: 10,
         }
     }
 }
@@ -65,7 +62,6 @@ impl EmbKcpConfig {
             dead_link: 18,
             stream: false,
             timeout_ms: 60_000,
-            update_interval_ms: 10,
         }
     }
 
@@ -83,7 +79,6 @@ impl EmbKcpConfig {
             dead_link: 10,
             stream: false,
             timeout_ms: 30_000,
-            update_interval_ms: 10,
         }
     }
 
@@ -101,7 +96,6 @@ impl EmbKcpConfig {
             dead_link: 8,
             stream: false,
             timeout_ms: 10_000,
-            update_interval_ms: 5,
         }
     }
 
@@ -119,7 +113,6 @@ impl EmbKcpConfig {
             dead_link: 10,
             stream: false,
             timeout_ms: 30_000,
-            update_interval_ms: 10,
         }
     }
 

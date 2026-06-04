@@ -1,6 +1,6 @@
 [package]
 name = "kcp2-std"
-version = "0.1.3"
+version = "0.1.4"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -15,9 +15,10 @@ default = []
 fastack_conserve = ["kcp2-core/fastack_conserve"]
 aead = ["dep:aes-gcm", "dep:chacha20poly1305", "dep:getrandom"]
 dtls = ["dep:webrtc-dtls", "dep:webrtc-util", "dep:base64ct", "dep:time"]
+binger = ["dep:binger-udp"]
 
 [dependencies]
-kcp2-core = { version = "0.1.3", path = "../kcp2-core", features = ["std", "bytes"] }
+kcp2-core = { version = "0.1.4", path = "../kcp2-core", features = ["std", "bytes"] }
 tokio = { version = "1", features = ["full"] }
 bytes = "1"
 log = "0.4"
@@ -33,6 +34,7 @@ webrtc-dtls = { version = "0.12", optional = true }
 webrtc-util = { version = "0.11", optional = true, default-features = false, features = ["conn"] }
 base64ct = { version = "=1.6.0", optional = true }
 time = { version = "=0.3.41", optional = true }
+binger-udp = { version = "0.1", optional = true }
 
 [dev-dependencies]
 rand = "0.8"

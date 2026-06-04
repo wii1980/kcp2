@@ -147,8 +147,9 @@ impl<'a> EmbKcpSession<'a> {
 
     pub async fn step(&mut self) -> bool {
         let ts = self.clock.now_ms();
-        let delay_ms = self.kcp.check(ts);
-        let deadline = Instant::now() + Duration::from_millis(delay_ms.max(1) as u64);
+        let next_update_ms = self.kcp.check(ts);
+        let delay_ms = next_update_ms.saturating_sub(ts).max(1);
+        let deadline = Instant::now() + Duration::from_millis(delay_ms as u64);
 
         let mut recv_buf = [0u8; 1500];
 

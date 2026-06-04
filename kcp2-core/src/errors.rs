@@ -30,6 +30,10 @@ pub enum KcpError {
     },
     DeadLink,
     Timeout,
+    SendBackpressure {
+        wait_snd: usize,
+        max: usize,
+    },
     #[cfg(feature = "alloc")]
     IoError(alloc::string::String),
     #[cfg(not(feature = "alloc"))]
@@ -67,6 +71,9 @@ impl fmt::Display for KcpError {
             }
             Self::DeadLink => write!(f, "dead link"),
             Self::Timeout => write!(f, "operation timed out"),
+            Self::SendBackpressure { wait_snd, max } => {
+                write!(f, "send backpressure: wait_snd {wait_snd} >= max {max}")
+            }
             Self::IoError(msg) => write!(f, "IO error: {msg}"),
         }
     }
@@ -76,3 +83,59 @@ impl fmt::Display for KcpError {
 impl std::error::Error for KcpError {}
 
 pub type Result<T> = core::result::Result<T, KcpError>;
+
+#[cfg(test)]
+#[cfg(feature = "alloc")]
+mod tests {
+    use super::*;
+    use alloc::format;
+
+    #[test]
+    fn test_error_display_conv_mismatch() {
+        let err = KcpError::ConvMismatch {
+            expected: 42,
+            got: 99,
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("42"));
+        assert!(msg.contains("99"));
+    }
+
+    #[test]
+    fn test_error_display_all_variants() {
+        let _ = format!("{}", KcpError::EmptyData);
+        let _ = format!("{}", KcpError::RecvQueueEmpty);
+        let _ = format!("{}", KcpError::IncompletePacket);
+        let _ = format!("{}", KcpError::DeadLink);
+        let _ = format!("{}", KcpError::Timeout);
+        let _ = format!("{}", KcpError::TooManyFragments {
+            count: 10,
+            max: 5,
+        });
+        let _ = format!("{}", KcpError::MtuTooSmall {
+            mtu: 50,
+            min: 100,
+        });
+        let _ = format!("{}", KcpError::InputTooShort {
+            len: 5,
+            min: 24,
+        });
+        let _ = format!("{}", KcpError::BufferTooSmall {
+            required: 100,
+            available: 50,
+        });
+        let _ = format!("{}", KcpError::SendBackpressure {
+            wait_snd: 5,
+            max: 3,
+        });
+        let _ = format!("{}", KcpError::InvalidCmd { cmd: 99 });
+        let _ = format!("{}", KcpError::IoError(alloc::string::String::from("test error")));
+    }
+
+    #[test]
+    fn test_error_clone() {
+        let err = KcpError::DeadLink;
+        let err2 = err.clone();
+        assert_eq!(format!("{err}"), format!("{err2}"));
+    }
+}

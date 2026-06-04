@@ -68,15 +68,6 @@ impl ConnectionReaper {
         drop(removed_set);
     }
 
-    /// 执行超时连接清理
-    ///
-    /// 在移除连接前调用 `conn.close()` 标记 KCP 为死亡状态，
-    /// 确保阻塞在 `recv()` 的业务代码能收到错误并退出。
-    #[allow(dead_code)]
-    pub fn run(&self, connections: &DashMap<u32, Arc<KcpConnection>>) -> usize {
-        self.run_with_cleanup(connections, |_| {})
-    }
-
     /// 执行超时连接清理，并通过回调执行额外的清理逻辑
     ///
     /// 在移除连接前调用 `conn.close()` 标记 KCP 为死亡状态，
@@ -152,7 +143,114 @@ mod tests {
         reaper.touch(1);
         reaper.touch(2);
 
-        let removed = reaper.run(&connections);
+        let removed = reaper.run_with_cleanup(&connections, |_| {});
         assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn test_reaper_remove() {
+        let reaper = ConnectionReaper::new(Duration::from_secs(60));
+        reaper.touch(1);
+        reaper.touch(2);
+        reaper.touch(3);
+
+        reaper.remove(2);
+
+        let removed = reaper.removed.lock();
+        assert_eq!(removed.len(), 1);
+        assert!(removed.contains(&2));
+    }
+
+    #[test]
+    fn test_reaper_remove_marked_skipped_during_cleanup() {
+        let reaper = ConnectionReaper::new(Duration::from_secs(60));
+        reaper.touch(1);
+        reaper.touch(2);
+        reaper.touch(3);
+
+        reaper.remove(2);
+
+        {
+            let removed = reaper.removed.lock();
+            assert!(removed.contains(&2));
+        }
+
+        let connections = DashMap::new();
+        let removed = reaper.run_with_cleanup(&connections, |_| {});
+        assert_eq!(removed, 0);
+    }
+
+    #[tokio::test]
+    async fn test_reaper_expired_connection_cleaned() {
+        use tokio::net::UdpSocket;
+        use crate::connection::KcpConnection;
+        use crate::config::KcpConfig;
+        use crate::transport::{KcpTransport, UdpTransport};
+
+        let socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+        let addr = socket.local_addr().unwrap();
+        let transport: Arc<dyn KcpTransport> = Arc::new(UdpTransport::new(socket));
+        let config = KcpConfig::default();
+
+        let conn = Arc::new(KcpConnection::new(42, addr, &config, transport, false));
+        let connections = DashMap::new();
+        connections.insert(42, conn);
+
+        let reaper = ConnectionReaper::new(Duration::from_millis(1));
+        reaper.touch(42);
+
+        let removed = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let removed = reaper.run_with_cleanup(&connections, |_| {});
+                if removed > 0 {
+                    return removed;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("reaper should have cleaned expired connection within 2s");
+
+        assert_eq!(removed, 1, "expired connection should be removed");
+        assert!(!connections.contains_key(&42), "connection should be removed from DashMap");
+    }
+
+    #[tokio::test]
+    async fn test_reaper_cleanup_callback_called() {
+        use tokio::net::UdpSocket;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use crate::connection::KcpConnection;
+        use crate::config::KcpConfig;
+        use crate::transport::{KcpTransport, UdpTransport};
+
+        let socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+        let addr = socket.local_addr().unwrap();
+        let transport: Arc<dyn KcpTransport> = Arc::new(UdpTransport::new(socket));
+        let config = KcpConfig::default();
+
+        let conn = Arc::new(KcpConnection::new(99, addr, &config, transport, false));
+        let connections = DashMap::new();
+        connections.insert(99, conn);
+
+        let reaper = ConnectionReaper::new(Duration::from_millis(1));
+        reaper.touch(99);
+
+        let counter = AtomicUsize::new(0);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                reaper.run_with_cleanup(&connections, |conv| {
+                    assert_eq!(conv, 99);
+                    counter.fetch_add(1, Ordering::SeqCst);
+                });
+                if counter.load(Ordering::SeqCst) > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("cleanup callback should have been called within 2s");
+
+        assert_eq!(counter.load(Ordering::SeqCst), 1, "cleanup callback should be called once");
     }
 }

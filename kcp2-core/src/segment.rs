@@ -6,6 +6,20 @@ use alloc::vec::Vec;
 #[cfg(all(not(feature = "alloc"), feature = "heapless"))]
 use heapless::Vec as HeaplessVec;
 
+#[inline]
+fn u32_from_le(buf: &[u8]) -> u32 {
+    let mut arr = [0u8; 4];
+    arr.copy_from_slice(&buf[..4]);
+    u32::from_le_bytes(arr)
+}
+
+#[inline]
+fn u16_from_le(buf: &[u8]) -> u16 {
+    let mut arr = [0u8; 2];
+    arr.copy_from_slice(&buf[..2]);
+    u16::from_le_bytes(arr)
+}
+
 #[derive(Clone, Debug)]
 pub struct Segment {
     pub conv: u32,
@@ -93,7 +107,7 @@ impl Segment {
             });
         }
 
-        let len = u32::from_le_bytes(data[20..24].try_into().unwrap()) as usize;
+        let len = u32_from_le(&data[20..24]) as usize;
         let total = 24 + len;
 
         if data.len() < total {
@@ -104,13 +118,17 @@ impl Segment {
         }
 
         let seg = Self {
-            conv: u32::from_le_bytes(data[0..4].try_into().unwrap()),
+            conv: u32_from_le(&data[0..4]),
             cmd: data[4],
             frg: data[5],
-            wnd: u16::from_le_bytes(data[6..8].try_into().unwrap()),
-            ts: u32::from_le_bytes(data[8..12].try_into().unwrap()),
-            sn: u32::from_le_bytes(data[12..16].try_into().unwrap()),
-            una: u32::from_le_bytes(data[16..20].try_into().unwrap()),
+            wnd: u16_from_le(&data[6..8]),
+            ts: u32_from_le(&data[8..12]),
+            sn: u32_from_le(&data[12..16]),
+            una: u32_from_le(&data[16..20]),
+            resendts: 0,
+            rto: 0,
+            fastack: 0,
+            xmit: 0,
             #[cfg(feature = "alloc")]
             data: Vec::from(&data[24..total]),
             #[cfg(all(not(feature = "alloc"), feature = "heapless"))]
@@ -122,7 +140,6 @@ impl Segment {
             })?,
             #[cfg(not(any(feature = "alloc", feature = "heapless")))]
             data_len: len,
-            ..Self::new()
         };
 
         Ok((seg, total))
@@ -152,18 +169,112 @@ impl Segment {
 
         buf.read_exact(&mut header)?;
 
-        seg.conv = u32::from_le_bytes(header[0..4].try_into().unwrap());
+        seg.conv = u32_from_le(&header[0..4]);
         seg.cmd = header[4];
         seg.frg = header[5];
-        seg.wnd = u16::from_le_bytes(header[6..8].try_into().unwrap());
-        seg.ts = u32::from_le_bytes(header[8..12].try_into().unwrap());
-        seg.sn = u32::from_le_bytes(header[12..16].try_into().unwrap());
-        seg.una = u32::from_le_bytes(header[16..20].try_into().unwrap());
-        let len = u32::from_le_bytes(header[20..24].try_into().unwrap()) as usize;
+        seg.wnd = u16_from_le(&header[6..8]);
+        seg.ts = u32_from_le(&header[8..12]);
+        seg.sn = u32_from_le(&header[12..16]);
+        seg.una = u32_from_le(&header[16..20]);
+        let len = u32_from_le(&header[20..24]) as usize;
 
         let mut data_vec = vec![0u8; len];
         buf.read_exact(&mut data_vec)?;
         seg.data = data_vec;
         Ok(seg)
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "alloc")]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn test_segment_encode_decode_roundtrip() {
+        let mut seg = Segment::new();
+        seg.conv = 0x1122_3344;
+        seg.cmd = 81;
+        seg.frg = 0;
+        seg.wnd = 128;
+        seg.ts = 1000;
+        seg.sn = 1;
+        seg.una = 0;
+        seg.data = vec![1, 2, 3, 4, 5];
+
+        let mut buf = [0u8; 256];
+        let written = seg.encode_to_slice(&mut buf).unwrap();
+
+        let (decoded, consumed) = Segment::decode_from_slice(&buf[..written]).unwrap();
+        assert_eq!(consumed, written);
+        assert_eq!(seg.conv, decoded.conv);
+        assert_eq!(seg.cmd, decoded.cmd);
+        assert_eq!(seg.frg, decoded.frg);
+        assert_eq!(seg.wnd, decoded.wnd);
+        assert_eq!(seg.ts, decoded.ts);
+        assert_eq!(seg.sn, decoded.sn);
+        assert_eq!(seg.una, decoded.una);
+        assert_eq!(seg.data, decoded.data);
+    }
+
+    #[test]
+    fn test_segment_decode_truncated() {
+        let mut seg = Segment::new();
+        seg.conv = 0x1122_3344;
+        seg.cmd = 81;
+        seg.data = vec![1, 2, 3, 4, 5];
+
+        let mut buf = [0u8; 256];
+        let written = seg.encode_to_slice(&mut buf).unwrap();
+
+        let result = Segment::decode_from_slice(&buf[..written - 2]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_segment_decode_header_too_short() {
+        let short = [0u8; 10];
+        let result = Segment::decode_from_slice(&short);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_segment_encode_buffer_too_small() {
+        let mut seg = Segment::new();
+        seg.conv = 0x1122_3344;
+        seg.cmd = 81;
+        seg.data = vec![0u8; 100];
+
+        let mut small_buf = [0u8; 20];
+        let result = seg.encode_to_slice(&mut small_buf);
+        assert!(matches!(result, Err(KcpError::BufferTooSmall { .. })));
+    }
+
+    #[test]
+    fn test_segment_default() {
+        let seg = Segment::new();
+        assert_eq!(seg.conv, 0);
+        assert_eq!(seg.cmd, 0);
+        assert_eq!(seg.frg, 0);
+        assert_eq!(seg.wnd, 0);
+        assert!(seg.data.is_empty());
+    }
+
+    #[test]
+    fn test_segment_zero_length_data() {
+        let mut seg = Segment::new();
+        seg.conv = 42;
+        seg.cmd = 82;
+        seg.data = vec![];
+
+        let mut buf = [0u8; 256];
+        let written = seg.encode_to_slice(&mut buf).unwrap();
+        assert_eq!(written, 24);
+
+        let (decoded, _) = Segment::decode_from_slice(&buf[..written]).unwrap();
+        assert_eq!(decoded.conv, 42);
+        assert_eq!(decoded.cmd, 82);
+        assert!(decoded.data.is_empty());
     }
 }

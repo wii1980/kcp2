@@ -139,7 +139,13 @@ async fn test_wouldblock_permanent_discard_causes_connection_death() {
         .unwrap();
 
     // Wait for Actor to process and attempt sends
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while transport.attempts() == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("Transport should have been called within 2s");
 
     // Verify: transport was called but all sends failed
     let attempts = transport.attempts();
@@ -162,12 +168,15 @@ async fn test_wouldblock_permanent_discard_causes_connection_death() {
     // BUG CONSEQUENCE: Because drain_output permanently discards WouldBlock packets,
     // ALL retransmissions also fail. The connection will die after dead_link threshold.
     // Wait for connection to die
-    for _ in 0..30 {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        if conn.is_dead().await {
-            break;
+    let _ = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            if conn.is_dead().await {
+                break;
+            }
         }
-    }
+    })
+    .await;
 
     let is_dead = conn.is_dead().await;
     let final_attempts = transport.attempts();
@@ -218,7 +227,13 @@ async fn test_wouldblock_intermittent_does_not_retry_discarded_packets() {
     }
 
     // Wait for Actor to process
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while transport.attempts() == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("Transport should have been called within 2s");
 
     let successes = transport.successes();
     let failures = transport.failures();
@@ -231,7 +246,14 @@ async fn test_wouldblock_intermittent_does_not_retry_discarded_packets() {
 
     // After some time, KCP will retransmit, but those also hit WouldBlock
     // because the transport is still in "blocked" state (fail_after reached)
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let initial_attempts = transport.attempts();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while transport.attempts() <= initial_attempts {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Retransmissions should have occurred within 2s");
 
     let new_attempts = transport.attempts();
     let new_failures = transport.failures();
@@ -280,7 +302,13 @@ async fn test_wouldblock_recovery_after_transport_unblock() {
     // Send data while blocked
     conn.send(b"data sent while blocked").await.unwrap();
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while transport.failures() == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("Packets should have been dropped within 2s");
 
     let failures_during_block = transport.failures();
     assert!(

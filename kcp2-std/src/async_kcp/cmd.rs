@@ -13,11 +13,6 @@ pub(crate) enum KcpCmd {
         data: Bytes,
         ack: oneshot::Sender<Result<usize>>,
     },
-    #[allow(dead_code)]
-    SendBatch {
-        data: Vec<Bytes>,
-        ack: oneshot::Sender<Result<usize>>,
-    },
     Input {
         data: Bytes,
     },

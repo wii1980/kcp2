@@ -7,7 +7,7 @@ use bytes::Bytes;
 
 use crate::async_kcp::{ActorConfig, AsyncKcp};
 use crate::transport::KcpTransport;
-use kcp2_core::{current, Result};
+use kcp2_core::{current, KcpError, Result};
 use crate::config::KcpConfig;
 
 type KcpOutputFn = Box<dyn Fn(&[u8]) + Send + Sync>;
@@ -17,6 +17,7 @@ pub struct KcpConnection {
     conv: u32,
     addr: SocketAddr,
     last_active: AtomicU64,
+    max_wait_snd: usize,
 }
 
 impl KcpConnection {
@@ -40,11 +41,14 @@ impl KcpConnection {
 
         let last_active = AtomicU64::new(current() as u64);
 
+        let max_wait_snd = config.max_wait_snd;
+
         Self {
             kcp,
             conv,
             addr,
             last_active,
+            max_wait_snd,
         }
     }
 
@@ -65,6 +69,20 @@ impl KcpConnection {
     }
 
     pub async fn send(&self, data: &[u8]) -> Result<usize> {
+        self.update_last_active();
+        self.kcp.send(data).await
+    }
+
+    pub async fn send_with_backpressure(&self, data: &[u8]) -> Result<usize> {
+        if self.max_wait_snd > 0 {
+            let pending = self.kcp.wait_snd().await;
+            if pending >= self.max_wait_snd {
+                return Err(KcpError::SendBackpressure {
+                    wait_snd: pending,
+                    max: self.max_wait_snd,
+                });
+            }
+        }
         self.update_last_active();
         self.kcp.send(data).await
     }
@@ -118,8 +136,6 @@ impl KcpConnection {
         &self.kcp
     }
 
-    /// 关闭连接，标记为死亡状态
-    /// 调用后 send/recv 将返回 DeadLink 错误
     pub fn close(&self) {
         self.kcp.kill();
     }

@@ -24,7 +24,7 @@ pub(super) async fn run_callback_actor<Output: KcpOutput + Send + 'static>(
     let mut kcp = {
         let c = collected.clone();
         let output_fn = Box::new(move |data: &[u8]| {
-            c.lock().unwrap().push(data.to_vec());
+            c.lock().expect("output collector lock should not be poisoned").push(data.to_vec());
         }) as Box<dyn Fn(&[u8]) + Send + Sync>;
         let mut kcp = Kcp::new(conv, output_fn);
         kcp.update(0);
@@ -58,7 +58,10 @@ pub(super) async fn run_callback_actor<Output: KcpOutput + Send + 'static>(
                     }
                     None => break,
                 }
-                next_update = tokio::time::Instant::now() + Duration::from_millis(kcp.check(current()) as u64);
+                let now_ms = current();
+                let next_ms = kcp.check(now_ms);
+                let delay_ms = next_ms.saturating_sub(now_ms);
+                next_update = tokio::time::Instant::now() + Duration::from_millis(delay_ms as u64);
             }
 
             _ = tokio::time::sleep_until(next_update) => {
@@ -67,7 +70,10 @@ pub(super) async fn run_callback_actor<Output: KcpOutput + Send + 'static>(
                 try_wake_recv_inner(&mut kcp, &mut recv_tmp, &mut pending_recv);
                 check_wait_acks_inner(&kcp, &mut pending_wait_acks);
                 check_wait_all_inner(&kcp, &mut pending_wait_all);
-                next_update = tokio::time::Instant::now() + Duration::from_millis(kcp.check(current()) as u64);
+                let now_ms = current();
+                let next_ms = kcp.check(now_ms);
+                let delay_ms = next_ms.saturating_sub(now_ms);
+                next_update = tokio::time::Instant::now() + Duration::from_millis(delay_ms as u64);
             }
 
             _ = shutdown_rx.changed() => {
@@ -95,22 +101,6 @@ fn handle_callback_cmd<Output: KcpOutput + Send + 'static>(
             kcp.flush();
             drain_callback_output(collected, output);
             let _ = ack.send(r);
-        }
-        KcpCmd::SendBatch { data, ack } => {
-            kcp.update(current());
-            let mut total_sent = 0usize;
-            for item in &data {
-                match kcp.send(item) {
-                    Ok(n) => total_sent += n,
-                    Err(e) => {
-                        let _ = ack.send(Err(e));
-                        return;
-                    }
-                }
-            }
-            kcp.flush();
-            drain_callback_output(collected, output);
-            let _ = ack.send(Ok(total_sent));
         }
         KcpCmd::Input { data } => {
             kcp.update(current());
@@ -299,8 +289,8 @@ fn drain_callback_output<Output: KcpOutput + Send + 'static>(
     collected: &Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
     output: &Arc<std::sync::Mutex<Option<Output>>>,
 ) {
-    let packets: Vec<Vec<u8>> = collected.lock().unwrap().drain(..).collect();
-    if let Some(ref callback) = *output.lock().unwrap() {
+    let packets: Vec<Vec<u8>> = collected.lock().expect("output collector lock should not be poisoned").drain(..).collect();
+    if let Some(ref callback) = *output.lock().expect("output callback lock should not be poisoned") {
         for pkt in &packets {
             callback(pkt);
         }

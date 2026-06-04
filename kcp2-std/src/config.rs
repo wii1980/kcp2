@@ -16,6 +16,9 @@ pub struct KcpConfig {
     pub stream: bool,
     pub timeout: Duration,
     pub(crate) crypto: Option<Arc<dyn KcpCrypto>>,
+    pub channel_capacity: usize,
+    pub max_wait_snd: usize,
+    pub pending_send_cap: usize,
 }
 
 impl Default for KcpConfig {
@@ -33,6 +36,9 @@ impl Default for KcpConfig {
             stream: false,
             timeout: Duration::from_secs(30),
             crypto: None,
+            channel_capacity: 16,
+            max_wait_snd: 0,
+            pending_send_cap: 64,
         }
     }
 }
@@ -93,6 +99,21 @@ impl KcpConfig {
 
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    pub fn channel_capacity(mut self, cap: usize) -> Self {
+        self.channel_capacity = cap.max(4);
+        self
+    }
+
+    pub fn max_wait_snd(mut self, max: usize) -> Self {
+        self.max_wait_snd = max;
+        self
+    }
+
+    pub fn pending_send_cap(mut self, cap: usize) -> Self {
+        self.pending_send_cap = cap;
         self
     }
 }

@@ -7,7 +7,7 @@
 //!
 //! 加密层 `KcpCrypto` 与此 trait 正交 — 两者在 `KcpActor` 中独立配置。
 //!
-//! 启用 `dtls` feature 后，可使用 [`DtlsClientTransport`] / [`DtlsServerTransport`]
+//! 启用 `dtls` feature 后，可使用 \[`DtlsClientTransport`\] / \[`DtlsServerTransport`\]
 //! 在 UDP 之上提供完整 DTLS 1.2 加密通道。
 
 #[cfg(feature = "dtls")]
@@ -15,6 +15,12 @@ pub mod dtls;
 
 #[cfg(feature = "dtls")]
 pub use dtls::{DtlsClientTransport, DtlsConfig, DtlsServerTransport, DEFAULT_DTLS_OVERHEAD};
+
+#[cfg(feature = "binger")]
+pub mod binger;
+
+#[cfg(feature = "binger")]
+pub use binger::BingerTransport;
 
 use std::future::Future;
 use std::io;
@@ -28,6 +34,15 @@ use tokio::net::UdpSocket;
 type RecvFuture<'a> = Pin<Box<dyn Future<Output = io::Result<usize>> + Send + 'a>>;
 /// 接收数据及来源地址的 Future 类型
 type RecvFromFuture<'a> = Pin<Box<dyn Future<Output = io::Result<(usize, SocketAddr)>> + Send + 'a>>;
+
+/// Batch send result
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BatchSendResult {
+    /// All packets sent successfully
+    All(usize),
+    /// Partial send — `sent` packets were sent, remaining need retry
+    Partial { sent: usize, remaining: usize },
+}
 
 /// KCP 传输层 trait
 ///
@@ -52,6 +67,69 @@ pub trait KcpTransport: Send + Sync {
     /// 传输层 overhead（用于 MTU 自动调整）
     fn overhead(&self) -> usize {
         0
+    }
+
+    /// Batch send multiple buffers to the same target (non-blocking).
+    /// Default: sends one-by-one via `try_send_to`, returns `Partial` on first WouldBlock.
+    fn try_send_batch_to(&self, packets: &[&[u8]], target: SocketAddr) -> io::Result<BatchSendResult> {
+        let mut sent = 0;
+        for buf in packets {
+            match self.try_send_to(buf, target) {
+                Ok(_) => sent += 1,
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    return Ok(BatchSendResult::Partial { sent, remaining: packets.len() - sent });
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(BatchSendResult::All(sent))
+    }
+
+    /// Batch send multiple buffers in connected mode (non-blocking).
+    /// Default: sends one-by-one via `try_send`, returns `Partial` on first WouldBlock.
+    fn try_send_batch_connected(&self, packets: &[&[u8]]) -> io::Result<BatchSendResult> {
+        let mut sent = 0;
+        for buf in packets {
+            match self.try_send(buf) {
+                Ok(_) => sent += 1,
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    return Ok(BatchSendResult::Partial { sent, remaining: packets.len() - sent });
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(BatchSendResult::All(sent))
+    }
+
+    /// Non-blocking batch receive into pre-allocated slots.
+    /// Returns number of packets received (0 if none available).
+    /// Default: returns 0 (not supported). Override in batch-capable transports.
+    fn try_recv_from_multi(&self, _slots: &mut [BatchRecvSlot<'_>]) -> io::Result<usize> {
+        Ok(0)
+    }
+
+    /// Whether this transport supports efficient batch send.
+    /// When false, the actor uses per-packet send to avoid extra allocation overhead.
+    /// Default: false. Override to return true in batch-capable transports.
+    fn supports_batch_send(&self) -> bool {
+        false
+    }
+}
+
+/// A single receive slot for batch receive operations
+pub struct BatchRecvSlot<'a> {
+    pub buf: &'a mut [u8],
+    pub n: usize,
+    pub addr: SocketAddr,
+}
+
+impl<'a> BatchRecvSlot<'a> {
+    pub fn new(buf: &'a mut [u8]) -> Self {
+        Self {
+            buf,
+            n: 0,
+            addr: "0.0.0.0:0".parse().expect("static SocketAddr literal is valid"),
+        }
     }
 }
 
@@ -129,5 +207,21 @@ impl<T: KcpTransport + ?Sized> KcpTransport for Arc<T> {
 
     fn overhead(&self) -> usize {
         (**self).overhead()
+    }
+
+    fn try_send_batch_to(&self, packets: &[&[u8]], target: SocketAddr) -> io::Result<BatchSendResult> {
+        (**self).try_send_batch_to(packets, target)
+    }
+
+    fn try_send_batch_connected(&self, packets: &[&[u8]]) -> io::Result<BatchSendResult> {
+        (**self).try_send_batch_connected(packets)
+    }
+
+    fn try_recv_from_multi(&self, slots: &mut [BatchRecvSlot<'_>]) -> io::Result<usize> {
+        (**self).try_recv_from_multi(slots)
+    }
+
+    fn supports_batch_send(&self) -> bool {
+        (**self).supports_batch_send()
     }
 }

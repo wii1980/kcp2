@@ -34,39 +34,26 @@ impl KcpHandle {
         rx.await.map_err(|_| KcpError::DeadLink)?
     }
 
-    /// 批量发送数据（一次 channel 通信，减少往返开销）
-    #[allow(dead_code)]
-    pub(crate) async fn send_batch(&self, data: Vec<&[u8]>) -> Result<usize> {
-        let (tx, rx) = oneshot::channel();
-        let bytes_data: Vec<Bytes> = data.iter().map(|d| Bytes::copy_from_slice(d)).collect();
-        self.cmd_tx
-            .send(KcpCmd::SendBatch {
-                data: bytes_data,
-                ack: tx,
-            })
-            .await
-            .map_err(|_| KcpError::DeadLink)?;
-        rx.await.map_err(|_| KcpError::DeadLink)?
-    }
-
     /// 输入数据（从网络收到的数据），fire-and-forget
     pub(crate) async fn input(&self, data: &[u8]) -> Result<usize> {
+        let len = data.len();
         self.cmd_tx
             .send(KcpCmd::Input {
                 data: Bytes::copy_from_slice(data),
             })
             .await
             .map_err(|_| KcpError::DeadLink)?;
-        Ok(0)
+        Ok(len)
     }
 
     /// 输入 Bytes 数据，fire-and-forget
     pub(crate) async fn input_bytes(&self, data: Bytes) -> Result<usize> {
+        let len = data.len();
         self.cmd_tx
             .send(KcpCmd::Input { data })
             .await
             .map_err(|_| KcpError::DeadLink)?;
-        Ok(0)
+        Ok(len)
     }
 
     /// 异步接收（等待数据）
