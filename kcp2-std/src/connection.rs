@@ -30,7 +30,6 @@ impl KcpConnection {
     ) -> Self {
         let mut actor_config = ActorConfig::from_kcp_config(config);
         actor_config.conv = conv;
-        // 在 crypto overhead 之外，再扣除 transport overhead（如 DTLS Record + AEAD）
         actor_config.mtu = actor_config.mtu.saturating_sub(transport.overhead());
         let kcp = Arc::new(AsyncKcp::new_with_transport(
             &actor_config,
@@ -87,12 +86,17 @@ impl KcpConnection {
         self.kcp.send(data).await
     }
 
+    /// Receive data, blocking until data arrives or timeout.
+    ///
+    /// Returns `Err(Timeout)` if no data arrives within `KcpConfig::timeout()`.
+    /// The connection is not closed on timeout — call `recv()` again to retry.
     pub async fn recv(&self, buf: &mut [u8]) -> Result<usize> {
         self.update_last_active();
         self.kcp.recv(buf).await
     }
 
     pub async fn try_recv(&self, buf: &mut [u8]) -> Result<usize> {
+        self.update_last_active();
         self.kcp.try_recv(buf).await
     }
 

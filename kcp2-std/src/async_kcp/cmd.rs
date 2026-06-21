@@ -46,15 +46,9 @@ pub(crate) enum KcpCmd {
     WaitSnd {
         ack: oneshot::Sender<usize>,
     },
-    IsSendAcked {
-        handle: SendHandle,
-        ack: oneshot::Sender<bool>,
-    },
-    Kill,
     SendReconnect {
         ack: oneshot::Sender<Result<()>>,
     },
-    ResetRto,
 }
 
 /// 挂起的 wait_ack 请求

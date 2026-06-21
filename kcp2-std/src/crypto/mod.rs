@@ -17,7 +17,7 @@
 //! ```
 //!
 //! - `CONV`: KCP 会话 ID，明文保留以便 Listener 路由
-//! - `NONCE`: AEAD 随机数（12 字节）
+//! - `NONCE`: AEAD 随机数（12 字节），结构为 `[counter(8) | conv(4)]` 提供 domain separation
 //! - `CIPHERTEXT`: KCP segment(s) 的加密数据
 //! - `AEAD_TAG`: 认证标签（16 字节），由 AEAD 算法附加
 //!
@@ -26,17 +26,18 @@
 //! ```rust,no_run
 //! # #[cfg(feature = "aead")]
 //! # mod _inner {
-//! # fn main() {
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use std::sync::Arc;
 //! use kcp2_std::crypto::{KcpCrypto, Aes256GcmCrypto};
 //! use kcp2_std::KcpConfig;
 //!
-//! let key = Aes256GcmCrypto::generate_key();
+//! let key = Aes256GcmCrypto::generate_key()?;
 //! let crypto = Arc::new(Aes256GcmCrypto::new(&key));
 //!
 //! let config = KcpConfig::default()
 //!     .crypto(crypto.clone())
 //!     .mtu(1400);  // internally deducts crypto.overhead() from MTU
+//! # Ok(())
 //! # }
 //! # }
 //! ```
@@ -62,8 +63,8 @@ pub trait KcpCrypto: Send + Sync {
     /// - `conv`: KCP 会话 ID，需明文输出以便路由
     /// - `plaintext`: KCP segment(s) 原始字节
     ///
-    /// 返回加密后的完整 UDP 载荷。
-    fn encrypt(&self, conv: u32, plaintext: &[u8]) -> Vec<u8>;
+    /// 返回 `Some(encrypted)` 加密成功，`None` 加密失败（已记录日志）。
+    fn encrypt(&self, conv: u32, plaintext: &[u8]) -> Option<Vec<u8>>;
 
     /// 解密一个收到的 UDP 包
     ///
@@ -78,8 +79,8 @@ pub trait KcpCrypto: Send + Sync {
 
 /// 空实现 — 不加密，零开销
 impl KcpCrypto for () {
-    fn encrypt(&self, _conv: u32, plaintext: &[u8]) -> Vec<u8> {
-        plaintext.to_vec()
+    fn encrypt(&self, _conv: u32, plaintext: &[u8]) -> Option<Vec<u8>> {
+        Some(plaintext.to_vec())
     }
 
     fn decrypt(&self, buf: &[u8]) -> Option<Vec<u8>> {
@@ -92,7 +93,7 @@ impl KcpCrypto for () {
 }
 
 impl<T: KcpCrypto + ?Sized> KcpCrypto for Arc<T> {
-    fn encrypt(&self, conv: u32, plaintext: &[u8]) -> Vec<u8> {
+    fn encrypt(&self, conv: u32, plaintext: &[u8]) -> Option<Vec<u8>> {
         (**self).encrypt(conv, plaintext)
     }
 

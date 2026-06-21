@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-06-21
+
 ### Changed
 
 - **Per-connection memory reduced ~82%** (from ~17.4 KB to ~3.1 KB in idle state)

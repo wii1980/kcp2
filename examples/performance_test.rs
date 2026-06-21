@@ -48,10 +48,9 @@ fn test_segment_codec() {
     let start = Instant::now();
 
     for _ in 0..iterations {
-        let mut buffer = Vec::with_capacity(200);
-        seg.encode(&mut buffer).unwrap();
-        let mut cursor = std::io::Cursor::new(&buffer);
-        let _ = Segment::decode(&mut cursor).unwrap();
+        let mut buffer = [0u8; 200];
+        let written = seg.encode_to_slice(&mut buffer).unwrap();
+        let _ = Segment::decode_from_slice(&buffer[..written]).unwrap();
     }
 
     let duration = start.elapsed();
@@ -192,9 +191,9 @@ fn test_concurrent_receive_performance() {
         seg.una = 0;
         seg.data = vec![0u8; 100]; // 100字节数据
 
-        let mut buffer = Vec::new();
-        seg.encode(&mut buffer).unwrap();
-        packets.push(buffer);
+        let mut buffer = [0u8; 256];
+        let written = seg.encode_to_slice(&mut buffer).unwrap();
+        packets.push(buffer[..written].to_vec());
     }
 
     let iterations = 100;

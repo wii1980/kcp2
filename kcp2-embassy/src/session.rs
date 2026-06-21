@@ -21,6 +21,7 @@ pub struct EmbKcpSession<'a> {
     clock: EmbassyClock,
     config: EmbKcpConfig,
     crypto: Option<Box<dyn EmbKcpCrypto>>,
+    recv_buf: Vec<u8>,
 }
 
 impl<'a> EmbKcpSession<'a> {
@@ -61,7 +62,10 @@ impl<'a> EmbKcpSession<'a> {
             clock: EmbassyClock,
             config,
             crypto,
+            recv_buf: Vec::new(),
         };
+
+        session.recv_buf.resize(1500, 0);
 
         session.kcp.set_nodelay(
             session.config.nodelay,
@@ -151,10 +155,8 @@ impl<'a> EmbKcpSession<'a> {
         let delay_ms = next_update_ms.saturating_sub(ts).max(1);
         let deadline = Instant::now() + Duration::from_millis(delay_ms as u64);
 
-        let mut recv_buf = [0u8; 1500];
-
         let result = embassy_futures::select::select(
-            async { self.socket.recv_from(&mut recv_buf).await },
+            async { self.socket.recv_from(&mut self.recv_buf).await },
             embassy_time::Timer::at(deadline),
         )
         .await;
@@ -164,7 +166,7 @@ impl<'a> EmbKcpSession<'a> {
                 let ts = self.clock.now_ms();
                 self.kcp.update(ts);
 
-                let data = &recv_buf[..n];
+                let data = &self.recv_buf[..n];
                 if let Some(ref crypto) = self.crypto {
                     match crypto.decrypt(data) {
                         Some(plaintext) => {
@@ -202,7 +204,13 @@ impl<'a> EmbKcpSession<'a> {
         let packets: Vec<Vec<u8>> = self.pending.borrow_mut().drain(..).collect();
         for pkt in packets {
             let payload = if let Some(ref crypto) = self.crypto {
-                crypto.encrypt(self.kcp.conv(), &pkt)
+                match crypto.encrypt(self.kcp.conv(), &pkt) {
+                    Some(encrypted) => encrypted,
+                    None => {
+                        log::error!("KCP encrypt failed, dropping packet (conv={})", self.kcp.conv());
+                        continue;
+                    }
+                }
             } else {
                 pkt
             };

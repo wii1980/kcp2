@@ -581,7 +581,7 @@ let n = kcp.recv(&mut buf).unwrap();
 | `rx_minrto` | `u32` | `100` | Minimum RTO (ms) |
 | `dead_link` | `u32` | `10` | Max retransmits before dead link |
 | `stream` | `bool` | `false` | Stream mode |
-| `timeout` | `Duration` | `30s` | Connection timeout |
+| `timeout` | `Duration` | `30s` | recv() timeout and idle connection timeout (`Duration::ZERO` = recv waits indefinitely) |
 | `channel_capacity` | `usize` | `16` | mpsc channel capacity per connection (min 4) |
 | `max_wait_snd` | `usize` | `0` | Backpressure threshold for pending send segments (0=disabled) |
 | `pending_send_cap` | `usize` | `16` | Pending send buffer capacity |
@@ -652,6 +652,21 @@ loop {
             buf.resize(required, 0);
             continue;  // retry with larger buffer
         }
+        Err(e) => break,
+    }
+}
+```
+
+### recv() Timeout
+
+`recv()` returns `Err(Timeout)` if no data arrives within `KcpConfig::timeout()` (default 30s). The connection stays alive — call `recv()` again to keep waiting. Set `KcpConfig::timeout(Duration::ZERO)` to disable the recv timeout entirely.
+
+```rust
+let mut buf = vec![0u8; 2048];
+loop {
+    match conn.recv(&mut buf).await {
+        Ok(n) => { /* process &buf[..n] */ }
+        Err(KcpError::Timeout) => { continue; }  // no data yet, keep waiting
         Err(e) => break,
     }
 }

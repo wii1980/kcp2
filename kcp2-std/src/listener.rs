@@ -34,6 +34,7 @@ pub struct KcpListener {
     pending_packets: Arc<Mutex<VecDeque<(Bytes, SocketAddr)>>>,
     batch_recv_bufs: Arc<Mutex<Option<Vec<Vec<u8>>>>>,
     batch_recv_supported: Arc<AtomicBool>,
+    max_connections: usize,
 }
 
 impl KcpListener {
@@ -83,6 +84,7 @@ impl KcpListener {
         });
 
         let buf_pool = Arc::new(BufferPool::new(BUF_POOL_CAPACITY, RECV_BUF_SIZE));
+        let max_connections = config.max_connections;
 
         Self {
             transport,
@@ -96,6 +98,7 @@ impl KcpListener {
             pending_packets: Arc::new(Mutex::new(VecDeque::new())),
             batch_recv_bufs: Arc::new(Mutex::new(None)),
             batch_recv_supported: Arc::new(AtomicBool::new(true)),
+            max_connections,
         }
     }
 
@@ -106,6 +109,7 @@ impl KcpListener {
         conv
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn accept(&self) -> io::Result<(Arc<KcpConnection>, SocketAddr)> {
         loop {
             // 1. Drain pending packets — drain all under lock, then process without holding it
@@ -133,6 +137,19 @@ impl KcpListener {
                         conn.close();
                     }
 
+                    // Enforce connection limit before creating a new connection
+                    if self.max_connections > 0
+                        && self.connections.len() >= self.max_connections
+                    {
+                        log::warn!(
+                            "KCP connection limit reached ({}), dropping conv={} from {}",
+                            self.max_connections,
+                            conv,
+                            addr,
+                        );
+                        continue;
+                    }
+
                     let conn = self.create_connection(conv, addr);
                     conn.input_bytes(data).await.map_err(|e| {
                         io::Error::other(e.to_string())
@@ -143,31 +160,37 @@ impl KcpListener {
 
             // 2. Try batch recv (non-blocking, only if transport supports it)
             if self.batch_recv_supported.load(Ordering::Relaxed) {
-                let mut batch_bufs: Vec<Vec<u8>> = {
-                    let mut bufs = self.batch_recv_bufs.lock();
-                    bufs.get_or_insert_with(|| {
+                // Hold the lock on batch buffers during recv to avoid cloning 256KB
+                let packets: Vec<(Bytes, SocketAddr)> = {
+                    let mut buf_guard = self.batch_recv_bufs.lock();
+                    let bufs = buf_guard.get_or_insert_with(|| {
                         (0..32).map(|_| vec![0u8; RECV_BUF_SIZE]).collect()
-                    }).clone()
+                    });
+
+                    let mut slots: Vec<crate::transport::BatchRecvSlot<'_>> = bufs
+                        .iter_mut()
+                        .map(|b| crate::transport::BatchRecvSlot::new(b.as_mut_slice()))
+                        .collect();
+
+                    match self.transport.try_recv_from_multi(&mut slots) {
+                        Ok(n) if n > 0 => slots
+                            .iter()
+                            .take(n)
+                            .map(|slot| {
+                                let data = Bytes::copy_from_slice(&slot.buf[..slot.n]);
+                                (data, slot.addr)
+                            })
+                            .collect(),
+                        // Ok(0) = no data right now; Err = transient error or unsupported.
+                        // Either way, fall through to single async recv.
+                        _ => Vec::new(),
+                    }
                 };
 
-                let mut slots: Vec<crate::transport::BatchRecvSlot<'_>> = batch_bufs
-                    .iter_mut()
-                    .map(|b| crate::transport::BatchRecvSlot::new(b.as_mut_slice()))
-                    .collect();
-
-                match self.transport.try_recv_from_multi(&mut slots) {
-                    Ok(0) => {
-                        self.batch_recv_supported.store(false, Ordering::Relaxed);
-                    }
-                    Ok(n) => {
-                        let mut pending = self.pending_packets.lock();
-                        for slot in slots.iter().take(n) {
-                            let data = Bytes::copy_from_slice(&slot.buf[..slot.n]);
-                            pending.push_back((data, slot.addr));
-                        }
-                        continue;
-                    }
-                    Err(_) => {}
+                if !packets.is_empty() {
+                    let mut pending = self.pending_packets.lock();
+                    pending.extend(packets);
+                    continue;
                 }
             }
 
@@ -207,6 +230,20 @@ impl KcpListener {
                     continue;
                 }
                 conn.close();
+            }
+
+            // Enforce connection limit before creating a new connection
+            if self.max_connections > 0
+                && self.connections.len() >= self.max_connections
+            {
+                log::warn!(
+                    "KCP connection limit reached ({}), dropping conv={} from {}",
+                    self.max_connections,
+                    conv,
+                    addr,
+                );
+                self.buf_pool.put(buf);
+                continue;
             }
 
             let conn = self.create_connection(conv, addr);
@@ -330,6 +367,10 @@ impl KcpListener {
 
     pub async fn close(&self) {
         self.closed.notify_waiters();
+        // Explicitly close all connections to stop their actor tasks
+        for entry in self.connections.iter() {
+            entry.value().close();
+        }
         self.connections.clear();
     }
 }
@@ -337,6 +378,12 @@ impl KcpListener {
 impl Drop for KcpListener {
     fn drop(&mut self) {
         self.cleanup_task.abort();
+        // Best-effort cleanup: close connections to stop their actor tasks.
+        // close() calls kcp.kill() which is a channel send — may not be processed
+        // if the actor task is already gone.
+        for entry in self.connections.iter() {
+            entry.value().close();
+        }
     }
 }
 
@@ -370,8 +417,6 @@ mod tests {
     async fn test_batch_send_ordering() {
         let addr = find_free_addr();
         let listener = KcpListener::bind(&addr).await.unwrap();
-        let listener_addr = listener.local_addr().unwrap();
-        let _ = listener_addr;
 
         let recv_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let recv_addr = recv_sock.local_addr().unwrap();

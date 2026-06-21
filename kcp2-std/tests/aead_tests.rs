@@ -18,7 +18,7 @@ fn find_free_addr() -> String {
 /// 测试加密 KCP 全链路：服务端到客户端的数据收发
 #[tokio::test]
 async fn test_crypto_echo() {
-    let server_key = Aes256GcmCrypto::generate_key();
+    let server_key = Aes256GcmCrypto::generate_key().unwrap();
 
     let server_crypto = Arc::new(Aes256GcmCrypto::new(&server_key));
     let client_crypto = Arc::new(Aes256GcmCrypto::new(&server_key));
@@ -94,8 +94,8 @@ async fn test_crypto_echo() {
 /// 验证密钥不匹配时数据不可读
 #[tokio::test]
 async fn test_crypto_key_mismatch() {
-    let key1 = Aes256GcmCrypto::generate_key();
-    let key2 = Aes256GcmCrypto::generate_key();
+    let key1 = Aes256GcmCrypto::generate_key().unwrap();
+    let key2 = Aes256GcmCrypto::generate_key().unwrap();
 
     let crypto1 = Arc::new(Aes256GcmCrypto::new(&key1));
     let crypto2 = Arc::new(Aes256GcmCrypto::new(&key2));
@@ -148,12 +148,12 @@ async fn test_crypto_key_mismatch() {
 /// 验证加密后 wire 数据与明文不同
 #[tokio::test]
 async fn test_crypto_wire_different() {
-    let key = Aes256GcmCrypto::generate_key();
+    let key = Aes256GcmCrypto::generate_key().unwrap();
 
     let crypto = Arc::new(Aes256GcmCrypto::new(&key));
     let plaintext = b"visible on wire?";
 
-    let encrypted = crypto.encrypt(42, plaintext);
+    let encrypted = crypto.encrypt(42, plaintext).unwrap();
     assert_ne!(
         &encrypted[..],
         &plaintext[..],

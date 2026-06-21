@@ -1,6 +1,6 @@
 [package]
 name = "kcp2-embassy"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 rust-version = "1.85"
 authors.workspace = true
@@ -19,7 +19,7 @@ esp32s3 = []
 aead = ["dep:aes-gcm", "dep:chacha20poly1305"]
 
 [dependencies]
-kcp2-core = { version = "0.1.4", path = "../kcp2-core", default-features = false, features = ["alloc"] }
+kcp2-core = { version = "0.1.5", path = "../kcp2-core", default-features = false, features = ["alloc"] }
 embassy-executor = { version = "0.10", default-features = false, optional = true }
 embassy-time = "0.5"
 embassy-net = { version = "0.9", features = ["udp", "dhcpv4", "medium-ethernet", "proto-ipv4"] }

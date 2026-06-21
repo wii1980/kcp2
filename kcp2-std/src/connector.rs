@@ -297,6 +297,11 @@ impl KcpConnector {
         let timeout_notify = shutdown_notify.clone();
         let timeout_duration = self.config.timeout;
         let timeout_task = tokio::spawn(async move {
+            // Duration::ZERO = idle timeout disabled (see KcpConfig::timeout docs)
+            if timeout_duration.is_zero() {
+                timeout_notify.notified().await;
+                return;
+            }
             let check_interval = timeout_duration / 3;
             let mut ticker = time::interval(check_interval.max(Duration::from_millis(100)));
             loop {
@@ -454,6 +459,107 @@ mod tests {
 
         let (conn, _handle) = result.unwrap();
         assert!(!conn.is_dead().await);
+    }
+
+    #[tokio::test]
+    async fn test_recv_task_stays_running() {
+        let addr = find_free_addr();
+        let connector = KcpConnector::new(&addr).unwrap().conv(1);
+        let (conn, recv_handle) = connector.connect_with_recv_task().await.unwrap();
+
+        assert!(!recv_handle.is_finished(), "recv_task must still be running after return");
+        assert!(!conn.is_dead().await, "connection must be alive");
+
+        recv_handle.abort();
+        conn.close();
+    }
+
+    #[tokio::test]
+    async fn test_recv_task_send_works() {
+        let addr = find_free_addr();
+        let connector = KcpConnector::new(&addr).unwrap().conv(1);
+        let (conn, recv_handle) = connector.connect_with_recv_task().await.unwrap();
+
+        let result = conn.send(b"hello").await;
+        assert!(result.is_ok(), "send should succeed: {:?}", result.err());
+
+        recv_handle.abort();
+        conn.close();
+    }
+
+    #[tokio::test]
+    async fn test_manuallydrop_prevents_premature_close() {
+        let addr = find_free_addr();
+        let connector = KcpConnector::new(&addr).unwrap().conv(1);
+        let (conn, recv_handle) = connector.connect_with_recv_task().await.unwrap();
+
+        // Give Drop ample time to fire if ManuallyDrop weren't in place
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        assert!(!conn.is_dead().await, "connection must not be closed by leaked session Drop");
+        assert!(!recv_handle.is_finished(), "recv_task must not be aborted by leaked session Drop");
+
+        recv_handle.abort();
+        conn.close();
+    }
+
+    #[tokio::test]
+    async fn test_manual_cleanup_closes_connection() {
+        let addr = find_free_addr();
+        let connector = KcpConnector::new(&addr).unwrap().conv(1);
+        let (conn, recv_handle) = connector.connect_with_recv_task().await.unwrap();
+
+        conn.close();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if conn.is_dead().await {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("connection should be dead after close()");
+
+        recv_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_abort_ends_recv_task() {
+        let addr = find_free_addr();
+        let connector = KcpConnector::new(&addr).unwrap().conv(1);
+        let (conn, recv_handle) = connector.connect_with_recv_task().await.unwrap();
+
+        assert!(!recv_handle.is_finished());
+
+        recv_handle.abort();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(recv_handle.is_finished(), "recv_task must be finished after abort");
+
+        conn.close();
+    }
+
+    #[tokio::test]
+    async fn test_zero_timeout_does_not_force_close() {
+        let addr = find_free_addr();
+        let connector = KcpConnector::new(&addr).unwrap()
+            .timeout(Duration::ZERO)
+            .conv(1);
+
+        let session = connector.connect().await.unwrap();
+        assert!(session.is_alive().await, "connection should start alive");
+
+        // Old bug: ZERO timeout caused force-close at ~100ms
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        assert!(
+            session.is_alive().await,
+            "connection must stay alive with Duration::ZERO timeout"
+        );
+
+        session.close().await;
     }
 
     #[tokio::test]

@@ -339,11 +339,11 @@ fn test_segment_encode_decode_roundtrip() {
     seg.una = 0;
     seg.data = vec![1, 2, 3, 4, 5];
 
-    let mut buffer = Vec::new();
-    seg.encode(&mut buffer).unwrap();
+    let mut buffer = [0u8; 256];
+    let written = seg.encode_to_slice(&mut buffer).unwrap();
 
-    let mut cursor = std::io::Cursor::new(&buffer);
-    let decoded = Segment::decode(&mut cursor).unwrap();
+    let (decoded, consumed) = Segment::decode_from_slice(&buffer[..written]).unwrap();
+    assert_eq!(consumed, written);
 
     assert_eq!(seg.conv, decoded.conv);
     assert_eq!(seg.cmd, decoded.cmd);
@@ -367,12 +367,12 @@ fn test_segment_decode_from_slice_roundtrip() {
     seg.una = 0;
     seg.data = vec![1, 2, 3, 4, 5];
 
-    let mut buffer = Vec::new();
-    seg.encode(&mut buffer).unwrap();
+    let mut buffer = [0u8; 256];
+    let written = seg.encode_to_slice(&mut buffer).unwrap();
 
-    let (decoded, consumed) = Segment::decode_from_slice(&buffer).unwrap();
+    let (decoded, consumed) = Segment::decode_from_slice(&buffer[..written]).unwrap();
 
-    assert_eq!(consumed, buffer.len());
+    assert_eq!(consumed, written);
     assert_eq!(seg.conv, decoded.conv);
     assert_eq!(seg.cmd, decoded.cmd);
     assert_eq!(seg.frg, decoded.frg);
@@ -395,10 +395,10 @@ fn test_segment_decode_from_slice_truncated() {
     seg.una = 0;
     seg.data = vec![1, 2, 3, 4, 5];
 
-    let mut buffer = Vec::new();
-    seg.encode(&mut buffer).unwrap();
+    let mut buffer = [0u8; 256];
+    let written = seg.encode_to_slice(&mut buffer).unwrap();
 
-    let truncated = &buffer[..buffer.len() - 2];
+    let truncated = &buffer[..written - 2];
     let result = Segment::decode_from_slice(truncated);
     assert!(result.is_err());
 }
@@ -527,10 +527,10 @@ fn test_kcp_get_conv() {
     seg.una = 0;
     seg.data = vec![1, 2, 3];
 
-    let mut buffer = Vec::new();
-    seg.encode(&mut buffer).unwrap();
+    let mut buffer = [0u8; 256];
+    let written = seg.encode_to_slice(&mut buffer).unwrap();
 
-    let conv = Kcp::<fn(&[u8])>::get_conv(&buffer);
+    let conv = Kcp::<fn(&[u8])>::get_conv(&buffer[..written]);
     assert_eq!(conv, Some(0x1234_5678));
 }
 

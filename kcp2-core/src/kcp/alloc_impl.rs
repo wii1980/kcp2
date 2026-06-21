@@ -55,6 +55,21 @@ pub struct Kcp<Output: KcpOutput> {
     free_segments: Vec<Segment>,
 }
 
+/// Write a 24-byte KCP segment header directly into `buf` without creating a `Segment` object.
+/// Used by `flush()` for ACK, WASK, and WINS headers where no data payload is needed.
+#[inline]
+fn encode_ack_header(buf: &mut [u8], conv: u32, cmd: u8, wnd: u16, ts: u32, sn: u32, una: u32) {
+    debug_assert!(buf.len() >= OVERHEAD);
+    buf[0..4].copy_from_slice(&conv.to_le_bytes());
+    buf[4] = cmd;
+    buf[5] = 0;
+    buf[6..8].copy_from_slice(&wnd.to_le_bytes());
+    buf[8..12].copy_from_slice(&ts.to_le_bytes());
+    buf[12..16].copy_from_slice(&sn.to_le_bytes());
+    buf[16..20].copy_from_slice(&una.to_le_bytes());
+    buf[20..24].copy_from_slice(&0u32.to_le_bytes());
+}
+
 impl<Output: KcpOutput> Kcp<Output> {
     pub fn new(conv: u32, output: Output) -> Self {
         Self {
@@ -111,6 +126,20 @@ impl<Output: KcpOutput> Kcp<Output> {
 
     pub fn conv(&self) -> u32 {
         self.conv
+    }
+
+    /// Returns true if periodic `update()` calls are needed.
+    ///
+    /// When this returns false, the connection is idle and timer-driven updates
+    /// can be safely skipped. Updates will resume automatically when `input()` or
+    /// `send()` is called next.
+    ///
+    /// A connection needs periodic updates when:
+    /// - `snd_buf` is non-empty (segments awaiting ACK, need retransmission timer)
+    /// - `acklist` is non-empty (pending ACKs to send)
+    /// - `rmt_wnd == 0` (remote window exhausted, need window probes)
+    pub fn needs_update(&self) -> bool {
+        !self.snd_buf.is_empty() || !self.acklist.is_empty() || self.rmt_wnd == 0
     }
 
     pub fn peek_size(&self) -> Result<usize> {
@@ -206,7 +235,7 @@ impl<Output: KcpOutput> Kcp<Output> {
     /// - **重连**（已有发送/接收状态）：完全清空所有缓冲并重置序列号、拥塞控制、
     ///   探测状态，使连接回到初始状态（相当于"软重启"）。
     fn handle_reconnect(&mut self, peer_wnd: u16) {
-        let is_fresh = self.rcv_nxt == 0 && self.snd_nxt == 0 && self.state == LinkState::Active;
+        let is_fresh = self.is_fresh;
 
         if is_fresh {
             log::info!("CMD_RECONNECT from fresh connection, conv={}", self.conv);
@@ -222,12 +251,19 @@ impl<Output: KcpOutput> Kcp<Output> {
             for seg in snd_queue_segs {
                 self.release_segment(seg);
             }
-            self.rcv_queue.clear();
+            let rcv_queue_segs: Vec<Segment> = self.rcv_queue.drain(..).collect();
+            for seg in rcv_queue_segs {
+                self.release_segment(seg);
+            }
             let snd_buf_segs: Vec<(u32, Segment)> = self.snd_buf.drain(..).collect();
             for (_, seg) in snd_buf_segs {
                 self.release_segment(seg);
             }
+            let rcv_buf_segs: Vec<Segment> = self.rcv_buf.values().cloned().collect();
             self.rcv_buf.clear();
+            for seg in rcv_buf_segs {
+                self.release_segment(seg);
+            }
             self.acklist.clear();
 
             self.snd_una = 0;
@@ -302,8 +338,7 @@ impl<Output: KcpOutput> Kcp<Output> {
         self.free_segments.pop().unwrap_or_default()
     }
 
-    /// Maximum segment pool size to bound memory under high churn.
-    const FREE_SEGMENTS_MAX: usize = 64;
+    const FREE_SEGMENTS_MAX: usize = 128;
 
     fn release_segment(&mut self, mut seg: Segment) {
         seg.data.clear();
@@ -343,7 +378,7 @@ impl<Output: KcpOutput> Kcp<Output> {
             }
             buf[..len].copy_from_slice(&seg.data);
             let recover = self.rcv_queue.len() >= self.rcv_wnd as usize;
-            self.rcv_queue.drain(..1);
+            self.rcv_queue.pop_front();
             self.move_buf_to_queue();
             if recover && self.rcv_queue.len() < self.rcv_wnd as usize {
                 self.probe |= ASK_TELL;
@@ -430,7 +465,7 @@ impl<Output: KcpOutput> Kcp<Output> {
             buffer.len().div_ceil(self.mss)
         };
 
-        if count >= WND_RCV as usize {
+        if count > WND_RCV as usize {
             // Roll back tail append to avoid corrupting snd_queue
             if tail_extend > 0 {
                 if let Some(old) = self.snd_queue.back_mut() {
@@ -493,10 +528,6 @@ impl<Output: KcpOutput> Kcp<Output> {
 
     pub fn is_send_acked(&self, handle: SendHandle) -> bool {
         time_diff(self.snd_una, handle.sn_end) > 0
-    }
-
-    pub fn snd_una(&self) -> u32 {
-        self.snd_una
     }
 
     fn update_rtt(&mut self, rtt: u32) {
@@ -569,7 +600,7 @@ impl<Output: KcpOutput> Kcp<Output> {
             self.rcv_nxt = sn;
         }
 
-        if time_diff(sn, self.rcv_nxt + self.rcv_wnd as u32) >= 0 || time_diff(sn, self.rcv_nxt) < 0
+        if time_diff(sn, self.rcv_nxt.wrapping_add(self.rcv_wnd as u32)) >= 0 || time_diff(sn, self.rcv_nxt) < 0
         {
             return;
         }
@@ -642,13 +673,10 @@ impl<Output: KcpOutput> Kcp<Output> {
             self.rmt_wnd = seg.wnd;
             self.parse_una(seg.una);
 
-            if self.is_fresh {
-                // is_fresh 在 handle_reconnect 中已被清除，
-                // 通用 input 路径不应对 snd_nxt/snd_una/rcv_nxt 做修改，
-                // 否则当本地已发送数据时（snd_buf 非空），重置 snd_nxt 会导致
-                // flush 中 snd_buf.last().sn >= snd_nxt 的断言失败。
-                self.is_fresh = false;
-            }
+            // 通用 input 路径仅清除 is_fresh 标记，不对 snd_nxt/snd_una/rcv_nxt 做重置。
+            // 若在此重置 snd_nxt，当本地已发送数据（snd_buf 非空）时，会破坏
+            // flush 中 snd_buf.last().sn < snd_nxt 的不变式。
+            self.is_fresh = false;
 
             match seg.cmd {
                 CMD_ACK => {
@@ -666,7 +694,7 @@ impl<Output: KcpOutput> Kcp<Output> {
                     }
                 }
                 CMD_PUSH => {
-                    if time_diff(seg.sn, self.rcv_nxt + self.rcv_wnd as u32) < 0 {
+                    if time_diff(seg.sn, self.rcv_nxt.wrapping_add(self.rcv_wnd as u32)) < 0 {
                         if self.acklist.len() < ACKLIST_LIMIT {
                             self.acklist.push((seg.sn, seg.ts));
                         } else {
@@ -742,11 +770,7 @@ impl<Output: KcpOutput> Kcp<Output> {
         }
 
         let current = self.current;
-        let mut seg = self.acquire_segment();
-        seg.conv = self.conv;
-        seg.cmd = CMD_ACK;
-        seg.wnd = self.wnd_unused();
-        seg.una = self.rcv_nxt;
+        let wnd = self.wnd_unused();
 
         let mut ptr = 0;
 
@@ -758,6 +782,7 @@ impl<Output: KcpOutput> Kcp<Output> {
             };
         }
 
+        // Write ACK headers directly into buffer — no Segment object or Vec allocation needed
         let acklist_len = self.acklist.len();
         for i in 0..acklist_len {
             let (sn, ts) = self.acklist[i];
@@ -765,9 +790,15 @@ impl<Output: KcpOutput> Kcp<Output> {
                 emit!(ptr);
                 ptr = 0;
             }
-            seg.sn = sn;
-            seg.ts = ts;
-            seg.encode_to_slice(&mut self.buffer[ptr..]).expect("ACK segment encode: buffer guaranteed to fit by MTU check");
+            encode_ack_header(
+                &mut self.buffer[ptr..],
+                self.conv,
+                CMD_ACK,
+                wnd,
+                ts,
+                sn,
+                self.rcv_nxt,
+            );
             ptr += OVERHEAD;
         }
         self.acklist.clear();
@@ -793,22 +824,36 @@ impl<Output: KcpOutput> Kcp<Output> {
         }
 
         if (self.probe & ASK_SEND) != 0 {
-            seg.cmd = CMD_WASK;
             if ptr + OVERHEAD > self.mtu {
                 emit!(ptr);
                 ptr = 0;
             }
-            seg.encode_to_slice(&mut self.buffer[ptr..]).expect("WASK segment encode: buffer guaranteed to fit by MTU check");
+            encode_ack_header(
+                &mut self.buffer[ptr..],
+                self.conv,
+                CMD_WASK,
+                wnd,
+                current,
+                0,
+                self.rcv_nxt,
+            );
             ptr += OVERHEAD;
         }
 
         if (self.probe & ASK_TELL) != 0 {
-            seg.cmd = CMD_WINS;
             if ptr + OVERHEAD > self.mtu {
                 emit!(ptr);
                 ptr = 0;
             }
-            seg.encode_to_slice(&mut self.buffer[ptr..]).expect("WINS segment encode: buffer guaranteed to fit by MTU check");
+            encode_ack_header(
+                &mut self.buffer[ptr..],
+                self.conv,
+                CMD_WINS,
+                wnd,
+                current,
+                0,
+                self.rcv_nxt,
+            );
             ptr += OVERHEAD;
         }
 
@@ -823,7 +868,7 @@ impl<Output: KcpOutput> Kcp<Output> {
             if let Some(mut newseg) = self.snd_queue.pop_front() {
                 newseg.conv = self.conv;
                 newseg.cmd = CMD_PUSH;
-                newseg.wnd = seg.wnd;
+                newseg.wnd = wnd;
                 newseg.ts = self.current;
                 newseg.sn = self.snd_nxt;
                 newseg.una = self.rcv_nxt;
@@ -897,8 +942,9 @@ impl<Output: KcpOutput> Kcp<Output> {
                 ptr = 0;
             }
 
-            seg.encode_to_slice(&mut self.buffer[ptr..]).expect("PUSH segment encode: buffer guaranteed to fit by MTU check");
-            ptr += need;
+            if seg.encode_to_slice(&mut self.buffer[ptr..]).is_ok() {
+                ptr += need;
+            }
 
             if seg.xmit >= self.dead_link && self.state != LinkState::Dead {
                 log::warn!(
@@ -985,7 +1031,7 @@ impl<Output: KcpOutput> Kcp<Output> {
         }
 
         let flush_diff = time_diff(flush_target, current) as u32;
-        min(min(tm_packet, flush_diff), self.interval)
+        current + min(min(tm_packet, flush_diff), self.interval)
     }
 }
 
@@ -1148,5 +1194,75 @@ mod tests {
         let mut kcp = Kcp::new(42, output);
         kcp.send(&vec![0u8; 65535]).unwrap();
         assert!(kcp.wait_snd() > 0);
+    }
+
+    #[test]
+    fn test_input_push_segment_success() {
+        let output = |_: &[u8]| {};
+        let mut kcp = Kcp::new(42, output);
+
+        let data = b"hello from push";
+        let mut seg = vec![0u8; OVERHEAD + data.len()];
+        seg[0..4].copy_from_slice(&42u32.to_le_bytes());
+        seg[4] = CMD_PUSH;
+        seg[6..8].copy_from_slice(&128u16.to_le_bytes());
+        seg[8..12].copy_from_slice(&0u32.to_le_bytes());
+        seg[12..16].copy_from_slice(&0u32.to_le_bytes());
+        seg[16..20].copy_from_slice(&0u32.to_le_bytes());
+        seg[20..24].copy_from_slice(&(data.len() as u32).to_le_bytes());
+        seg[24..].copy_from_slice(data);
+
+        let result = kcp.input(&seg);
+        assert!(result.is_ok(), "input should accept valid PUSH segment");
+
+        let mut buf = [0u8; 1024];
+        let n = kcp.recv(&mut buf).unwrap();
+        assert_eq!(&buf[..n], data);
+    }
+
+    #[test]
+    fn test_reconnect_clears_send_buffers_when_not_fresh() {
+        let output = |_: &[u8]| {};
+        let mut kcp = Kcp::new(42, output);
+
+        kcp.send(b"pending data").unwrap();
+        assert!(kcp.wait_snd() > 0);
+
+        let data = b"dummy";
+        let mut seg = vec![0u8; OVERHEAD + data.len()];
+        seg[0..4].copy_from_slice(&42u32.to_le_bytes());
+        seg[4] = CMD_PUSH;
+        seg[6..8].copy_from_slice(&128u16.to_le_bytes());
+        seg[12..16].copy_from_slice(&0u32.to_le_bytes());
+        seg[20..24].copy_from_slice(&(data.len() as u32).to_le_bytes());
+        seg[24..].copy_from_slice(data);
+        kcp.input(&seg).unwrap();
+
+        assert!(kcp.wait_snd() > 0);
+
+        let mut reconnect = [0u8; OVERHEAD];
+        reconnect[0..4].copy_from_slice(&42u32.to_le_bytes());
+        reconnect[4] = CMD_RECONNECT;
+        reconnect[6..8].copy_from_slice(&128u16.to_le_bytes());
+        kcp.input(&reconnect).unwrap();
+
+        assert_eq!(kcp.wait_snd(), 0);
+    }
+
+    #[test]
+    fn test_send_allows_exactly_wnd_rcv_fragments() {
+        let output = |_: &[u8]| {};
+        let mut kcp = Kcp::new(42, output);
+        kcp.set_mtu(200).unwrap();
+        let mss = 200 - OVERHEAD;
+
+        let data_size = mss * (WND_RCV as usize);
+        let data = vec![0xAA; data_size];
+        let result = kcp.send(&data);
+        assert!(result.is_ok(), "send with exactly WND_RCV fragments should succeed");
+
+        let oversized = vec![0xBB; mss * (WND_RCV as usize + 1)];
+        let result = kcp.send(&oversized);
+        assert!(result.is_err(), "send with WND_RCV+1 fragments should fail");
     }
 }

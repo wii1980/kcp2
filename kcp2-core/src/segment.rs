@@ -144,45 +144,6 @@ impl Segment {
 
         Ok((seg, total))
     }
-
-    #[cfg(feature = "std")]
-    pub fn encode(&self, buf: &mut impl std::io::Write) -> std::io::Result<usize> {
-        let mut header = [0u8; 24];
-        header[0..4].copy_from_slice(&self.conv.to_le_bytes());
-        header[4] = self.cmd;
-        header[5] = self.frg;
-        header[6..8].copy_from_slice(&self.wnd.to_le_bytes());
-        header[8..12].copy_from_slice(&self.ts.to_le_bytes());
-        header[12..16].copy_from_slice(&self.sn.to_le_bytes());
-        header[16..20].copy_from_slice(&self.una.to_le_bytes());
-        header[20..24].copy_from_slice(&(self.data.len() as u32).to_le_bytes());
-
-        buf.write_all(&header)?;
-        buf.write_all(&self.data)?;
-        Ok(24 + self.data.len())
-    }
-
-    #[cfg(feature = "std")]
-    pub fn decode(buf: &mut impl std::io::Read) -> std::io::Result<Self> {
-        let mut seg = Self::new();
-        let mut header = [0u8; 24];
-
-        buf.read_exact(&mut header)?;
-
-        seg.conv = u32_from_le(&header[0..4]);
-        seg.cmd = header[4];
-        seg.frg = header[5];
-        seg.wnd = u16_from_le(&header[6..8]);
-        seg.ts = u32_from_le(&header[8..12]);
-        seg.sn = u32_from_le(&header[12..16]);
-        seg.una = u32_from_le(&header[16..20]);
-        let len = u32_from_le(&header[20..24]) as usize;
-
-        let mut data_vec = vec![0u8; len];
-        buf.read_exact(&mut data_vec)?;
-        seg.data = data_vec;
-        Ok(seg)
-    }
 }
 
 #[cfg(test)]

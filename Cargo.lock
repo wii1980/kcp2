@@ -1090,11 +1090,12 @@ dependencies = [
 
 [[package]]
 name = "kcp2"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "criterion",
  "kcp2-core",
  "kcp2-std",
+ "libc",
  "once_cell",
  "rand",
  "tokio",
@@ -1102,7 +1103,7 @@ dependencies = [
 
 [[package]]
 name = "kcp2-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "bytes",
  "heapless 0.8.0",
@@ -1111,7 +1112,7 @@ dependencies = [
 
 [[package]]
 name = "kcp2-embassy"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "aes-gcm",
  "chacha20poly1305",
@@ -1128,7 +1129,7 @@ dependencies = [
 
 [[package]]
 name = "kcp2-std"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "aes-gcm",
  "base64ct",

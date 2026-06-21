@@ -16,24 +16,25 @@ use super::cmd::{KcpCmd, PendingWaitAck};
 use crate::crypto::KcpCrypto;
 use crate::transport::{BatchSendResult, KcpTransport};
 
-const OUTPUT_QUEUE_CAPACITY: usize = 32;
-const OUTPUT_POOL_CAPACITY: usize = 16;
-const DEFAULT_PENDING_SEND_CAP: usize = 64;
+const OUTPUT_POOL_CAPACITY: usize = 32;
+const BATCH_RETRY_LIMIT: usize = 64;
+const DEFAULT_PENDING_SEND_CAP: usize = 128;
 
 /// KCP output 收集器 — flush 时将数据包收集到锁无关的 ArrayQueue，使用 BytesMut 池减少分配
 type OutputCollector = Box<dyn Fn(&[u8]) + Send + Sync>;
 
 fn make_output_collector(
     pool: Arc<ArrayQueue<BytesMut>>,
+    queue_size: usize,
 ) -> (OutputCollector, Arc<ArrayQueue<BytesMut>>) {
-    let queue: Arc<ArrayQueue<BytesMut>> = Arc::new(ArrayQueue::new(OUTPUT_QUEUE_CAPACITY));
+    let queue: Arc<ArrayQueue<BytesMut>> = Arc::new(ArrayQueue::new(queue_size));
     let q = queue.clone();
     let collector: OutputCollector = Box::new(move |data: &[u8]| {
         let mut buf = pool.pop().unwrap_or_default();
         buf.clear();
         buf.extend_from_slice(data);
         if q.push(buf).is_err() {
-            log::warn!("KCP output queue full ({}), packet dropped", OUTPUT_QUEUE_CAPACITY);
+            log::warn!("KCP output queue full ({}), packet dropped", queue_size);
         }
     });
     (collector, queue)
@@ -59,6 +60,8 @@ pub(crate) struct KcpActor {
     pending_send: VecDeque<Vec<u8>>,
     pending_send_cap: usize,
     recv_tmp: BytesMut,
+    pending_recv_since: Option<u32>,
+    recv_timeout_ms: u64,
 }
 
 impl KcpActor {
@@ -72,9 +75,11 @@ impl KcpActor {
         shutdown_rx: watch::Receiver<bool>,
         crypto: Option<Arc<dyn KcpCrypto>>,
         pending_send_cap: usize,
+        recv_timeout_ms: u64,
+        output_queue_size: usize,
     ) -> Self {
         let output_pool = Arc::new(ArrayQueue::new(OUTPUT_POOL_CAPACITY));
-        let (collector, collected) = make_output_collector(output_pool.clone());
+        let (collector, collected) = make_output_collector(output_pool.clone(), output_queue_size);
         let mut kcp = Kcp::new(conv, collector);
         kcp.update(0);
 
@@ -94,6 +99,8 @@ impl KcpActor {
             pending_send: VecDeque::new(),
             pending_send_cap: if pending_send_cap > 0 { pending_send_cap } else { DEFAULT_PENDING_SEND_CAP },
             recv_tmp: BytesMut::with_capacity(128),
+            pending_recv_since: None,
+            recv_timeout_ms,
         }
     }
 
@@ -103,49 +110,64 @@ impl KcpActor {
 
     /// Actor 主循环
     pub(crate) async fn run(mut self) {
-        let mut next_update = self.calc_next_update();
-
         loop {
+            let needs_update = self.kcp.needs_update();
+            let next_update = self.calc_next_update();
+            let recv_deadline = self.calc_recv_deadline();
             tokio::select! {
                 biased;
 
-                // 优先处理命令
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
                         Some(c) => {
-                            if self.handle_cmd(c) {
+                            if !self.process_cmd_batch(c) {
                                 break;
                             }
                         }
                         None => break,
                     }
-                    next_update = self.calc_next_update();
                 }
 
-                // 精确定时 update
-                _ = tokio::time::sleep_until(next_update) => {
+                _ = tokio::time::sleep_until(next_update), if needs_update => {
                     self.do_update();
-                    next_update = self.calc_next_update();
                 }
 
-                // 关闭信号（值变为 true 或 sender drop 均触发退出）
+                _ = tokio::time::sleep_until(recv_deadline.unwrap_or_else(|| {
+                    tokio::time::Instant::now() + Duration::from_secs(86400)
+                })), if recv_deadline.is_some() => {
+                    self.check_pending_recv_timeout();
+                }
+
                 _ = self.shutdown_rx.changed() => {
+                    self.resolve_all_pending_with_dead();
                     break;
                 }
             }
         }
     }
 
+    fn process_cmd_batch(&mut self, first_cmd: KcpCmd) -> bool {
+        if self.handle_cmd_deferred(first_cmd) {
+            return false;
+        }
+        while let Ok(c) = self.cmd_rx.try_recv() {
+            if self.handle_cmd_deferred(c) {
+                return false;
+            }
+        }
+        self.post_batch();
+        true
+    }
+
     // ─── 命令处理 ──────────────────────────────────────
 
-    /// 返回 true 表示 Actor 应退出
+    /// 处理命令但不 flush。返回 true 表示 Actor 应退出。
     #[allow(clippy::too_many_lines)]
-    fn handle_cmd(&mut self, cmd: KcpCmd) -> bool {
+    fn handle_cmd_deferred(&mut self, cmd: KcpCmd) -> bool {
         match cmd {
             KcpCmd::Send { data, ack } => {
                 self.kcp.update(current());
                 let result = self.kcp.send(&data);
-                self.flush_and_drain();
                 let _ = ack.send(result);
             }
 
@@ -162,37 +184,27 @@ impl KcpActor {
                 } else {
                     data
                 };
-                if self.kcp.input_bytes(data).is_ok() {
-                    self.flush_and_drain();
+                if let Err(e) = self.kcp.input_bytes(data) {
+                    log::warn!("KCP input error: {}", e);
                 }
-                self.try_wake_recv();
-                self.check_wait_acks();
-                self.check_wait_all();
             }
 
             KcpCmd::Recv { ack } => {
-                self.kcp.update(current());
                 if ack.is_closed() {
-                    // recv future was cancelled (e.g. tokio::select! picked another
-                    // branch). Don't consume data from KCP queue — next Recv will get it.
                     return false;
                 }
+                self.kcp.update(current());
                 if let Some(data) = self.try_recv_inner() {
-                    self.flush_and_drain();
-                    if ack.send(data).is_err() {
-                        // Receiver dropped between is_closed() and send().
-                        // Data consumed from KCP queue but receiver gone.
-                        // Extremely unlikely race, but data is lost.
-                    }
+                    let _ = ack.send(data);
                 } else {
                     self.pending_recv = Some(ack);
+                    self.pending_recv_since = Some(current());
                 }
             }
 
             KcpCmd::TryRecv { ack } => {
                 self.kcp.update(current());
                 if let Some(data) = self.try_recv_inner() {
-                    self.flush_and_drain();
                     let _ = ack.send(data);
                 } else {
                     let _ = ack.send(Err(KcpError::RecvQueueEmpty));
@@ -202,7 +214,6 @@ impl KcpActor {
             KcpCmd::SendWithHandle { data, ack } => {
                 self.kcp.update(current());
                 let result = self.kcp.send_with_handle(&data);
-                self.flush_and_drain();
                 let _ = ack.send(result);
             }
 
@@ -256,32 +267,21 @@ impl KcpActor {
                 let _ = ack.send(self.kcp.wait_snd());
             }
 
-            KcpCmd::IsSendAcked { handle, ack } => {
-                let _ = ack.send(self.kcp.is_send_acked(handle));
-            }
-
-            KcpCmd::Kill => {
-                self.kcp.kill();
-                self.pending_send.clear();
-                self.resolve_all_pending_with_dead();
-                return true;
-            }
-
             KcpCmd::SendReconnect { ack } => {
                 self.pending_send.clear();
                 self.kcp.update(current());
                 let result = self.kcp.send_reconnect();
-                self.flush_and_drain();
                 let _ = ack.send(result);
-            }
-
-            KcpCmd::ResetRto => {
-                self.kcp.update(current());
-                self.kcp.reset_rto();
-                self.flush_and_drain();
             }
         }
         false
+    }
+
+    fn post_batch(&mut self) {
+        self.flush_and_drain();
+        self.try_wake_recv();
+        self.check_wait_acks();
+        self.check_wait_all();
     }
 
     // ─── 内部操作 ──────────────────────────────────────
@@ -292,6 +292,31 @@ impl KcpActor {
         self.try_wake_recv();
         self.check_wait_acks();
         self.check_wait_all();
+    }
+
+    fn calc_recv_deadline(&self) -> Option<tokio::time::Instant> {
+        if self.recv_timeout_ms == 0 {
+            return None;
+        }
+        let since = self.pending_recv_since?;
+        let elapsed = current().wrapping_sub(since) as u64;
+        let remaining = self.recv_timeout_ms.saturating_sub(elapsed);
+        Some(tokio::time::Instant::now() + Duration::from_millis(remaining))
+    }
+
+    fn check_pending_recv_timeout(&mut self) {
+        if self.recv_timeout_ms == 0 {
+            return;
+        }
+        if let (Some(_), Some(since)) = (self.pending_recv.as_ref(), self.pending_recv_since) {
+            let elapsed = current().wrapping_sub(since);
+            if elapsed as u64 >= self.recv_timeout_ms {
+                if let Some(ack) = self.pending_recv.take() {
+                    self.pending_recv_since = None;
+                    let _ = ack.send(Err(KcpError::Timeout));
+                }
+            }
+        }
     }
 
     fn flush_and_drain(&mut self) {
@@ -309,14 +334,25 @@ impl KcpActor {
     }
 
     fn drain_output_batch(&mut self) {
+        if self.crypto.is_some() {
+            self.drain_output_batch_crypto();
+        } else {
+            self.drain_output_batch_zero_copy();
+        }
+    }
+
+    fn drain_output_batch_crypto(&mut self) {
+        let crypto = match self.crypto.as_ref() {
+            Some(c) => c.clone(),
+            None => return,
+        };
         let mut payloads: Vec<Vec<u8>> = Vec::new();
         let mut orig_pkts: Vec<BytesMut> = Vec::new();
 
         while let Some(pkt) = self.collected.pop() {
-            let payload: Vec<u8> = if let Some(ref crypto) = self.crypto {
-                crypto.encrypt(self.kcp.conv(), &pkt)
-            } else {
-                pkt.to_vec()
+            let Some(payload) = crypto.encrypt(self.kcp.conv(), &pkt) else {
+                let _ = self.output_pool.push(pkt);
+                continue;
             };
             orig_pkts.push(pkt);
             payloads.push(payload);
@@ -340,7 +376,11 @@ impl KcpActor {
                 }
             }
             Ok(BatchSendResult::Partial { sent, .. }) => {
-                for pkt in orig_pkts.into_iter().take(sent) {
+                for pkt in orig_pkts.drain(..sent) {
+                    let _ = self.output_pool.push(pkt);
+                }
+                // Return remaining unsent buffers to pool
+                for pkt in orig_pkts.drain(..) {
                     let _ = self.output_pool.push(pkt);
                 }
                 for payload in payloads.into_iter().skip(sent) {
@@ -372,33 +412,116 @@ impl KcpActor {
         }
     }
 
-    fn drain_output_per_packet(&mut self) {
+    fn drain_output_batch_zero_copy(&mut self) {
+        let mut orig_pkts: Vec<BytesMut> = Vec::new();
+
         while let Some(pkt) = self.collected.pop() {
-            let payload: Vec<u8> = if let Some(ref crypto) = self.crypto {
-                crypto.encrypt(self.kcp.conv(), &pkt)
-            } else {
-                pkt.to_vec()
-            };
-            let result = if self.connected {
-                self.transport.try_send(&payload)
-            } else {
-                self.transport.try_send_to(&payload, self.peer)
-            };
-            match result {
-                Ok(_) => {
+            orig_pkts.push(pkt);
+        }
+
+        if orig_pkts.is_empty() {
+            return;
+        }
+
+        let slices: Vec<&[u8]> = orig_pkts.iter().map(BytesMut::as_ref).collect();
+        let result = if self.connected {
+            self.transport.try_send_batch_connected(&slices)
+        } else {
+            self.transport.try_send_batch_to(&slices, self.peer)
+        };
+
+        match result {
+            Ok(BatchSendResult::All(_)) => {
+                for pkt in orig_pkts {
                     let _ = self.output_pool.push(pkt);
                 }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+            }
+            Ok(BatchSendResult::Partial { sent, .. }) => {
+                for pkt in orig_pkts.drain(..sent) {
+                    let _ = self.output_pool.push(pkt);
+                }
+                for pkt in orig_pkts.drain(..) {
                     if self.pending_send.len() < self.pending_send_cap {
-                        self.pending_send.push_back(payload);
+                        self.pending_send.push_back(pkt.to_vec());
                     } else {
                         log::warn!("KCP pending_send full, dropping packet");
                     }
-                    break;
-                }
-                Err(e) => {
-                    log::warn!("KCP output send error: {}", e);
                     let _ = self.output_pool.push(pkt);
+                }
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                for pkt in &orig_pkts {
+                    if self.pending_send.len() < self.pending_send_cap {
+                        self.pending_send.push_back(pkt.to_vec());
+                    } else {
+                        log::warn!("KCP pending_send full, dropping packet");
+                    }
+                }
+                for pkt in orig_pkts {
+                    let _ = self.output_pool.push(pkt);
+                }
+            }
+            Err(e) => {
+                log::warn!("KCP batch send error: {}", e);
+                for pkt in orig_pkts {
+                    let _ = self.output_pool.push(pkt);
+                }
+            }
+        }
+    }
+
+    fn drain_output_per_packet(&mut self) {
+        if let Some(ref crypto) = self.crypto {
+            while let Some(pkt) = self.collected.pop() {
+                let Some(payload) = crypto.encrypt(self.kcp.conv(), &pkt) else {
+                    let _ = self.output_pool.push(pkt);
+                    continue;
+                };
+                let _ = self.output_pool.push(pkt);
+                let result = if self.connected {
+                    self.transport.try_send(&payload)
+                } else {
+                    self.transport.try_send_to(&payload, self.peer)
+                };
+                match result {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        if self.pending_send.len() < self.pending_send_cap {
+                            self.pending_send.push_back(payload);
+                        } else {
+                            log::warn!("KCP pending_send full, dropping packet");
+                        }
+                        break;
+                    }
+                    Err(e) => {
+                        log::warn!("KCP output send error: {}", e);
+                    }
+                }
+            }
+        } else {
+            while let Some(pkt) = self.collected.pop() {
+                let result = if self.connected {
+                    self.transport.try_send(&pkt)
+                } else {
+                    self.transport.try_send_to(&pkt, self.peer)
+                };
+                match result {
+                    Ok(_) => {
+                        let _ = self.output_pool.push(pkt);
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        if self.pending_send.len() < self.pending_send_cap {
+                            self.pending_send.push_back(pkt.to_vec());
+                        } else {
+                            log::warn!("KCP pending_send full, dropping packet");
+                        }
+                        let _ = self.output_pool.push(pkt);
+                        break;
+                    }
+                    Err(e) => {
+                        log::warn!("KCP output send error: {}", e);
+                        let _ = self.output_pool.push(pkt);
+                    }
                 }
             }
         }
@@ -418,7 +541,7 @@ impl KcpActor {
     }
 
     fn retry_pending_batch(&mut self) {
-        let total = self.pending_send.len().min(OUTPUT_QUEUE_CAPACITY);
+        let total = self.pending_send.len().min(BATCH_RETRY_LIMIT);
         let items: Vec<&[u8]> = self.pending_send.iter().take(total).map(Vec::as_slice).collect();
 
         let result = if self.connected {
@@ -490,9 +613,11 @@ impl KcpActor {
     fn try_wake_recv(&mut self) {
         if let Some(ack) = self.pending_recv.take() {
             if ack.is_closed() {
+                self.pending_recv_since = None;
                 return;
             }
             if let Some(result) = self.try_recv_inner() {
+                self.pending_recv_since = None;
                 let _ = ack.send(result);
             } else {
                 self.pending_recv = Some(ack);
@@ -503,24 +628,20 @@ impl KcpActor {
     /// 检查所有挂起的 wait_ack 请求
     fn check_wait_acks(&mut self) {
         let now = tokio::time::Instant::now();
-        let mut i = 0;
-        while i < self.pending_wait_acks.len() {
-            let pending = &self.pending_wait_acks[i];
-            let resolved = if self.kcp.is_send_acked(pending.handle) {
-                Some(Ok(()))
+        let mut to_resolve: Vec<(usize, Result<()>)> = Vec::new();
+        for (i, pending) in self.pending_wait_acks.iter().enumerate() {
+            if self.kcp.is_send_acked(pending.handle) {
+                to_resolve.push((i, Ok(())));
             } else if self.kcp.is_dead() {
-                Some(Err(KcpError::DeadLink))
+                to_resolve.push((i, Err(KcpError::DeadLink)));
             } else if pending.deadline.is_some_and(|d| now >= d) {
-                Some(Err(KcpError::Timeout))
-            } else {
-                None
-            };
-            if let Some(result) = resolved {
-                let pending = self.pending_wait_acks.remove(i);
-                let _ = pending.ack.send(result);
-            } else {
-                i += 1;
+                to_resolve.push((i, Err(KcpError::Timeout)));
             }
+        }
+        // Resolve in reverse order to maintain valid indices during removal
+        for (i, result) in to_resolve.into_iter().rev() {
+            let pending = self.pending_wait_acks.remove(i);
+            let _ = pending.ack.send(result);
         }
     }
 
@@ -540,6 +661,7 @@ impl KcpActor {
     /// Kill 后清理所有挂起请求
     fn resolve_all_pending_with_dead(&mut self) {
         if let Some(ack) = self.pending_recv.take() {
+            self.pending_recv_since = None;
             let _ = ack.send(Err(KcpError::DeadLink));
         }
         for pending in self.pending_wait_acks.drain(..) {
@@ -551,13 +673,12 @@ impl KcpActor {
         self.pending_send.clear();
     }
 
-    /// 使用 ikcp_check 计算下次 update 时间
+    /// Calculate next update time using KCP check.
+    /// check() returns an absolute timestamp (ms since program start).
+    /// When update is needed immediately, it returns `current`.
     fn calc_next_update(&self) -> tokio::time::Instant {
         let now_ms = current();
         let next_update_ms = self.kcp.check(now_ms);
-        // check() returns an absolute timestamp (ms since epoch), not a delay.
-        // When update is needed immediately, it returns `current`.
-        // Convert to a Duration relative to now.
         let delay_ms = next_update_ms.saturating_sub(now_ms);
         tokio::time::Instant::now() + Duration::from_millis(delay_ms as u64)
     }

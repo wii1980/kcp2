@@ -46,8 +46,10 @@ impl KcpTransport for BingerTransport {
         if let Some(remote) = self.remote {
             self.inner.try_send_to(buf, remote)
         } else {
-            self.inner.try_send_to(buf, "0.0.0.0:0".parse().expect("static SocketAddr literal is valid"))
-                .map(|_| buf.len())
+            Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "BingerTransport has no remote address set",
+            ))
         }
     }
 

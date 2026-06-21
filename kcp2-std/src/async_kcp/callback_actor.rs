@@ -24,7 +24,7 @@ pub(super) async fn run_callback_actor<Output: KcpOutput + Send + 'static>(
     let mut kcp = {
         let c = collected.clone();
         let output_fn = Box::new(move |data: &[u8]| {
-            c.lock().expect("output collector lock should not be poisoned").push(data.to_vec());
+            c.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(data.to_vec());
         }) as Box<dyn Fn(&[u8]) + Send + Sync>;
         let mut kcp = Kcp::new(conv, output_fn);
         kcp.update(0);
@@ -45,11 +45,28 @@ pub(super) async fn run_callback_actor<Output: KcpOutput + Send + 'static>(
             cmd = cmd_rx.recv() => {
                 match cmd {
                     Some(c) => {
-                        handle_callback_cmd(
+                        handle_callback_cmd_deferred(
+                            &mut kcp,
+                            c,
+                            &mut pending_recv,
+                            &mut pending_wait_acks,
+                            &mut pending_wait_all,
+                            &mut recv_tmp,
+                        );
+                        while let Ok(c) = cmd_rx.try_recv() {
+                            handle_callback_cmd_deferred(
+                                &mut kcp,
+                                c,
+                                &mut pending_recv,
+                                &mut pending_wait_acks,
+                                &mut pending_wait_all,
+                                &mut recv_tmp,
+                            );
+                        }
+                        callback_post_batch(
                             &mut kcp,
                             &collected,
                             &output,
-                            c,
                             &mut pending_recv,
                             &mut pending_wait_acks,
                             &mut pending_wait_all,
@@ -64,7 +81,7 @@ pub(super) async fn run_callback_actor<Output: KcpOutput + Send + 'static>(
                 next_update = tokio::time::Instant::now() + Duration::from_millis(delay_ms as u64);
             }
 
-            _ = tokio::time::sleep_until(next_update) => {
+            _ = tokio::time::sleep_until(next_update), if kcp.needs_update() => {
                 kcp.update(current());
                 drain_callback_output(&collected, &output);
                 try_wake_recv_inner(&mut kcp, &mut recv_tmp, &mut pending_recv);
@@ -84,10 +101,8 @@ pub(super) async fn run_callback_actor<Output: KcpOutput + Send + 'static>(
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-fn handle_callback_cmd<Output: KcpOutput + Send + 'static>(
+fn handle_callback_cmd_deferred(
     kcp: &mut Kcp<impl KcpOutput>,
-    collected: &Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
-    output: &Arc<std::sync::Mutex<Option<Output>>>,
     cmd: KcpCmd,
     pending_recv: &mut Option<oneshot::Sender<Result<BytesMut>>>,
     pending_wait_acks: &mut Vec<PendingWaitAck>,
@@ -98,27 +113,20 @@ fn handle_callback_cmd<Output: KcpOutput + Send + 'static>(
         KcpCmd::Send { data, ack } => {
             kcp.update(current());
             let r = kcp.send(&data);
-            kcp.flush();
-            drain_callback_output(collected, output);
             let _ = ack.send(r);
         }
         KcpCmd::Input { data } => {
             kcp.update(current());
-            let _ = kcp.input_bytes(data);
-            kcp.flush();
-            drain_callback_output(collected, output);
-            try_wake_recv_inner(kcp, recv_tmp, pending_recv);
-            check_wait_acks_inner(kcp, pending_wait_acks);
-            check_wait_all_inner(kcp, pending_wait_all);
+            if let Err(e) = kcp.input_bytes(data) {
+                log::warn!("KCP input error: {}", e);
+            }
         }
         KcpCmd::Recv { ack } => {
-            kcp.update(current());
             if ack.is_closed() {
                 return;
             }
+            kcp.update(current());
             if let Some(r) = try_recv_inner_fn(kcp, recv_tmp) {
-                kcp.flush();
-                drain_callback_output(collected, output);
                 let _ = ack.send(r);
             } else {
                 *pending_recv = Some(ack);
@@ -127,8 +135,6 @@ fn handle_callback_cmd<Output: KcpOutput + Send + 'static>(
         KcpCmd::TryRecv { ack } => {
             kcp.update(current());
             if let Some(r) = try_recv_inner_fn(kcp, recv_tmp) {
-                kcp.flush();
-                drain_callback_output(collected, output);
                 let _ = ack.send(r);
             } else {
                 let _ = ack.send(Err(KcpError::RecvQueueEmpty));
@@ -137,8 +143,6 @@ fn handle_callback_cmd<Output: KcpOutput + Send + 'static>(
         KcpCmd::SendWithHandle { data, ack } => {
             kcp.update(current());
             let r = kcp.send_with_handle(&data);
-            kcp.flush();
-            drain_callback_output(collected, output);
             let _ = ack.send(r);
         }
         KcpCmd::WaitAck { handle, ack } => {
@@ -186,27 +190,29 @@ fn handle_callback_cmd<Output: KcpOutput + Send + 'static>(
         KcpCmd::WaitSnd { ack } => {
             let _ = ack.send(kcp.wait_snd());
         }
-        KcpCmd::IsSendAcked { handle, ack } => {
-            let _ = ack.send(kcp.is_send_acked(handle));
-        }
-        KcpCmd::Kill => {
-            kcp.kill();
-            resolve_all_dead(pending_recv, pending_wait_acks, pending_wait_all);
-        }
         KcpCmd::SendReconnect { ack } => {
             kcp.update(current());
             let r = kcp.send_reconnect();
-            kcp.flush();
-            drain_callback_output(collected, output);
             let _ = ack.send(r);
         }
-        KcpCmd::ResetRto => {
-            kcp.update(current());
-            kcp.reset_rto();
-            kcp.flush();
-            drain_callback_output(collected, output);
-        }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn callback_post_batch<Output: KcpOutput + Send + 'static>(
+    kcp: &mut Kcp<impl KcpOutput>,
+    collected: &Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+    output: &Arc<std::sync::Mutex<Option<Output>>>,
+    pending_recv: &mut Option<oneshot::Sender<Result<BytesMut>>>,
+    pending_wait_acks: &mut Vec<PendingWaitAck>,
+    pending_wait_all: &mut Vec<oneshot::Sender<Result<()>>>,
+    recv_tmp: &mut BytesMut,
+) {
+    kcp.flush();
+    drain_callback_output(collected, output);
+    try_wake_recv_inner(kcp, recv_tmp, pending_recv);
+    check_wait_acks_inner(kcp, pending_wait_acks);
+    check_wait_all_inner(kcp, pending_wait_all);
 }
 
 fn try_recv_inner_fn(
@@ -249,24 +255,19 @@ fn check_wait_acks_inner(
     pending: &mut Vec<PendingWaitAck>,
 ) {
     let now = tokio::time::Instant::now();
-    let mut i = 0;
-    while i < pending.len() {
-        let p = &pending[i];
-        let resolved = if kcp.is_send_acked(p.handle) {
-            Some(Ok(()))
+    let mut to_resolve: Vec<(usize, Result<()>)> = Vec::new();
+    for (i, p) in pending.iter().enumerate() {
+        if kcp.is_send_acked(p.handle) {
+            to_resolve.push((i, Ok(())));
         } else if kcp.is_dead() {
-            Some(Err(KcpError::DeadLink))
+            to_resolve.push((i, Err(KcpError::DeadLink)));
         } else if p.deadline.is_some_and(|d| now >= d) {
-            Some(Err(KcpError::Timeout))
-        } else {
-            None
-        };
-        if let Some(result) = resolved {
-            let p = pending.remove(i);
-            let _ = p.ack.send(result);
-        } else {
-            i += 1;
+            to_resolve.push((i, Err(KcpError::Timeout)));
         }
+    }
+    for (i, result) in to_resolve.into_iter().rev() {
+        let p = pending.remove(i);
+        let _ = p.ack.send(result);
     }
 }
 
@@ -289,26 +290,10 @@ fn drain_callback_output<Output: KcpOutput + Send + 'static>(
     collected: &Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
     output: &Arc<std::sync::Mutex<Option<Output>>>,
 ) {
-    let packets: Vec<Vec<u8>> = collected.lock().expect("output collector lock should not be poisoned").drain(..).collect();
-    if let Some(ref callback) = *output.lock().expect("output callback lock should not be poisoned") {
+    let packets: Vec<Vec<u8>> = collected.lock().unwrap_or_else(std::sync::PoisonError::into_inner).drain(..).collect();
+    if let Some(ref callback) = *output.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
         for pkt in &packets {
             callback(pkt);
         }
-    }
-}
-
-fn resolve_all_dead(
-    pending_recv: &mut Option<oneshot::Sender<Result<BytesMut>>>,
-    pending_wait_acks: &mut Vec<PendingWaitAck>,
-    pending_wait_all: &mut Vec<oneshot::Sender<Result<()>>>,
-) {
-    if let Some(ack) = pending_recv.take() {
-        let _ = ack.send(Err(KcpError::DeadLink));
-    }
-    for p in pending_wait_acks.drain(..) {
-        let _ = p.ack.send(Err(KcpError::DeadLink));
-    }
-    for p in pending_wait_all.drain(..) {
-        let _ = p.send(Err(KcpError::DeadLink));
     }
 }

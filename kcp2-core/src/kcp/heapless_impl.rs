@@ -51,11 +51,18 @@ pub struct Kcp<Output: KcpOutput, const MAX_SEGMENTS: usize = 32> {
 }
 
 impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
-    /// 创建并预填充 buffer，避免 encode_to_slice 时 panic
+    /// 创建并预填充 buffer，避免 encode_to_slice 时越界。
+    ///
+    /// 安全性：`HeaplessVec` 容量在类型层面固定为 4488，
+    /// 与 `[0u8; 4488]` 大小完全一致，`from_slice` 不可能失败。
     fn new_buffer() -> HeaplessVec<u8, 4488> {
-        let mut v = HeaplessVec::new();
-        v.extend_from_slice(&[0u8; 4488]).expect("heapless buffer: fixed-size Vec pre-allocated for 4488 bytes");
-        v
+        match HeaplessVec::from_slice(&[0u8; 4488]) {
+            Ok(v) => v,
+            Err(_) => {
+                // unreachable: 容量 4488 与数据 4488 严格相等
+                HeaplessVec::new()
+            }
+        }
     }
 
     pub fn new(conv: u32, output: Output) -> Self {
@@ -112,6 +119,20 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
 
     pub fn conv(&self) -> u32 {
         self.conv
+    }
+
+    /// Returns true if periodic `update()` calls are needed.
+    ///
+    /// When this returns false, the connection is idle and timer-driven updates
+    /// can be safely skipped. Updates will resume automatically when `input()` or
+    /// `send()` is called next.
+    ///
+    /// A connection needs periodic updates when:
+    /// - `snd_buf` is non-empty (segments awaiting ACK, need retransmission timer)
+    /// - `acklist` is non-empty (pending ACKs to send)
+    /// - `rmt_wnd == 0` (remote window exhausted, need window probes)
+    pub fn needs_update(&self) -> bool {
+        !self.snd_buf.is_empty() || !self.acklist.is_empty() || self.rmt_wnd == 0
     }
 
     pub fn peek_size(&self) -> Result<usize> {
@@ -215,7 +236,7 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
     }
 
     fn handle_reconnect(&mut self, peer_wnd: u16) {
-        let is_fresh = self.rcv_nxt == 0 && self.snd_nxt == 0 && self.state == LinkState::Active;
+        let is_fresh = self.is_fresh;
 
         if is_fresh {
             log::info!("CMD_RECONNECT from fresh connection, conv={}", self.conv);
@@ -399,15 +420,11 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
             buffer.len().div_ceil(self.mss)
         };
 
-        if count >= WND_RCV as usize {
+        if count > WND_RCV as usize {
             if tail_extend > 0 {
                 if let Some(old) = self.snd_queue.last_mut() {
                     let original_len = old.data.len() - tail_extend;
-                    let mut rolled_back = HeaplessVec::new();
-                    // tail_extend > 0 implies extend_from_slice succeeded above,
-                    // so original_len <= self.mss and this can't fail
-                    let _ = rolled_back.extend_from_slice(&old.data[..original_len]);
-                    old.data = rolled_back;
+                    old.data.truncate(original_len);
                 }
             }
             return Err(KcpError::TooManyFragments {
@@ -479,10 +496,6 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
         time_diff(self.snd_una, handle.sn_end) > 0
     }
 
-    pub fn snd_una(&self) -> u32 {
-        self.snd_una
-    }
-
     fn update_rtt(&mut self, rtt: u32) {
         if self.rx_srtt == 0 {
             self.rx_srtt = rtt;
@@ -544,7 +557,7 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
             self.rcv_nxt = sn;
         }
 
-        if time_diff(sn, self.rcv_nxt + self.rcv_wnd as u32) >= 0 || time_diff(sn, self.rcv_nxt) < 0
+        if time_diff(sn, self.rcv_nxt.wrapping_add(self.rcv_wnd as u32)) >= 0 || time_diff(sn, self.rcv_nxt) < 0
         {
             return;
         }
@@ -621,16 +634,10 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
             self.rmt_wnd = seg.wnd;
             self.parse_una(seg.una);
 
-            if self.is_fresh {
-                // is_fresh 在 handle_reconnect 中已被清除，
-                // 通用 input 路径不应对 snd_nxt/snd_una/rcv_nxt 做修改，
-                // 否则当本地已发送数据时（snd_buf 非空），重置 snd_nxt 会导致
-                // flush 中 snd_buf.last().sn >= snd_nxt 的断言失败。
-                self.is_fresh = false;
-            }
-
-            // snd_buf is sorted by SN (pushed in order, removed by retain/remove)
-            self.snd_una = self.snd_buf.first().map(|(sn, _)| *sn).unwrap_or(self.snd_nxt);
+            // 通用 input 路径仅清除 is_fresh 标记，不对 snd_nxt/snd_una/rcv_nxt 做重置。
+            // 若在此重置 snd_nxt，当本地已发送数据（snd_buf 非空）时，会破坏
+            // flush 中 snd_buf.last().sn < snd_nxt 的不变式。
+            self.is_fresh = false;
 
             match seg.cmd {
                 CMD_ACK => {
@@ -638,7 +645,6 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
                         self.update_rtt(time_diff(self.current, seg.ts) as u32);
                     }
                     self.parse_ack(seg.sn);
-                    self.snd_una = self.snd_buf.first().map(|(sn, _)| *sn).unwrap_or(self.snd_nxt);
                     if !flag {
                         flag = true;
                         max_ack = seg.sn;
@@ -649,7 +655,7 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
                     }
                 }
                 CMD_PUSH => {
-                    if time_diff(seg.sn, self.rcv_nxt + self.rcv_wnd as u32) < 0 {
+                    if time_diff(seg.sn, self.rcv_nxt.wrapping_add(self.rcv_wnd as u32)) < 0 {
                         if self.acklist.push((seg.sn, seg.ts)).is_err() {
                             log::warn!("acklist full, dropping ACK for sn={}", seg.sn);
                         }
@@ -671,6 +677,12 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
                 _ => return Err(KcpError::InvalidCmd { cmd: seg.cmd }),
             }
         }
+
+        self.snd_una = self
+            .snd_buf
+            .first()
+            .map(|(sn, _)| *sn)
+            .unwrap_or(self.snd_nxt);
 
         if flag {
             self.parse_fastack(max_ack, latest_ts);
@@ -723,8 +735,9 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
             }
             seg.sn = sn;
             seg.ts = ts;
-            seg.encode_to_slice(&mut self.buffer[ptr..]).expect("ACK segment encode: buffer guaranteed to fit by MTU check");
-            ptr += OVERHEAD;
+            if seg.encode_to_slice(&mut self.buffer[ptr..]).is_ok() {
+                ptr += OVERHEAD;
+            }
         }
 
         if self.rmt_wnd == 0 {
@@ -753,8 +766,9 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
                 self.output(&self.buffer[..ptr]);
                 ptr = 0;
             }
-            seg.encode_to_slice(&mut self.buffer[ptr..]).expect("WASK segment encode: buffer guaranteed to fit by MTU check");
-            ptr += OVERHEAD;
+            if seg.encode_to_slice(&mut self.buffer[ptr..]).is_ok() {
+                ptr += OVERHEAD;
+            }
         }
 
         if (self.probe & ASK_TELL) != 0 {
@@ -763,8 +777,9 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
                 self.output(&self.buffer[..ptr]);
                 ptr = 0;
             }
-            seg.encode_to_slice(&mut self.buffer[ptr..]).expect("WINS segment encode: buffer guaranteed to fit by MTU check");
-            ptr += OVERHEAD;
+            if seg.encode_to_slice(&mut self.buffer[ptr..]).is_ok() {
+                ptr += OVERHEAD;
+            }
         }
 
         self.probe = 0;
@@ -853,8 +868,9 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
                 ptr = 0;
             }
 
-            seg.encode_to_slice(&mut self.buffer[ptr..]).expect("PUSH segment encode: buffer guaranteed to fit by MTU check");
-            ptr += need;
+            if seg.encode_to_slice(&mut self.buffer[ptr..]).is_ok() {
+                ptr += need;
+            }
 
             if seg.xmit >= self.dead_link && self.state != LinkState::Dead {
                 log::warn!(
@@ -943,6 +959,6 @@ impl<Output: KcpOutput, const MAX_SEGMENTS: usize> Kcp<Output, MAX_SEGMENTS> {
         }
 
         let flush_diff = time_diff(flush_target, current) as u32;
-        min(min(tm_packet, flush_diff), self.interval)
+        current + min(min(tm_packet, flush_diff), self.interval)
     }
 }

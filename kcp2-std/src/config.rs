@@ -19,6 +19,17 @@ pub struct KcpConfig {
     pub channel_capacity: usize,
     pub max_wait_snd: usize,
     pub pending_send_cap: usize,
+    /// Maximum number of concurrent connections. 0 = unlimited (default).
+    pub max_connections: usize,
+    /// Size of the KCP internal output queue (default: 64).
+    ///
+    /// When KCP flushes segments faster than the socket can send them,
+    /// segments are queued here.  If the queue is full, segments are
+    /// dropped and rely on KCP retransmission (ARQ) for recovery.
+    ///
+    /// Increase this for bursty traffic or large payloads to reduce
+    /// retransmission-induced latency spikes.
+    pub output_queue_size: usize,
 }
 
 impl Default for KcpConfig {
@@ -39,6 +50,8 @@ impl Default for KcpConfig {
             channel_capacity: 16,
             max_wait_snd: 0,
             pending_send_cap: 64,
+            max_connections: 0,
+            output_queue_size: 64,
         }
     }
 }
@@ -97,6 +110,18 @@ impl KcpConfig {
         self
     }
 
+    /// Connection idle timeout and `recv()` timeout.
+    ///
+    /// Controls two mechanisms:
+    /// - **recv() timeout**: `recv()` returns `Err(Timeout)` if no data arrives
+    ///   within this duration. The connection stays alive — retry `recv()` to
+    ///   wait again.
+    /// - **idle timeout**: a background task force-closes the connection if no
+    ///   I/O activity occurs for this duration, resolving pending operations
+    ///   with `Err(DeadLink)`.
+    ///
+    /// `Duration::ZERO` disables the recv() timeout (waits indefinitely).
+    /// The idle timeout task always runs regardless.
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
@@ -114,6 +139,20 @@ impl KcpConfig {
 
     pub fn pending_send_cap(mut self, cap: usize) -> Self {
         self.pending_send_cap = cap;
+        self
+    }
+
+    pub fn max_connections(mut self, max: usize) -> Self {
+        self.max_connections = max;
+        self
+    }
+
+    /// Set the KCP internal output queue size (default: 64).
+    ///
+    /// Larger values reduce retransmissions under bursty write patterns
+    /// at the cost of higher memory usage per connection.
+    pub fn output_queue_size(mut self, size: usize) -> Self {
+        self.output_queue_size = size;
         self
     }
 }

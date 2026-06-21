@@ -581,7 +581,7 @@ let n = kcp.recv(&mut buf).unwrap();
 | `rx_minrto` | `u32` | `100` | 最小 RTO（ms） |
 | `dead_link` | `u32` | `10` | 最大重传次数 |
 | `stream` | `bool` | `false` | 流模式 |
-| `timeout` | `Duration` | `30s` | 连接超时 |
+| `timeout` | `Duration` | `30s` | recv() 超时与空闲连接超时（`Duration::ZERO` = recv 无限等待） |
 | `channel_capacity` | `usize` | `16` | 每连接 mpsc channel 容量（最小 4） |
 | `max_wait_snd` | `usize` | `0` | 发送背压阈值，待发送分段数上限（0=禁用） |
 | `pending_send_cap` | `usize` | `16` | 待发送缓冲区容量 |
@@ -652,6 +652,21 @@ loop {
             buf.resize(required, 0);
             continue;  // 用更大的缓冲区重试
         }
+        Err(e) => break,
+    }
+}
+```
+
+### recv() 超时
+
+`recv()` 在 `KcpConfig::timeout()`（默认 30s）内无数据到达时返回 `Err(Timeout)`。连接不会关闭——再次调用 `recv()` 继续等待。设置 `KcpConfig::timeout(Duration::ZERO)` 可禁用 recv 超时。
+
+```rust
+let mut buf = vec![0u8; 2048];
+loop {
+    match conn.recv(&mut buf).await {
+        Ok(n) => { /* 处理 &buf[..n] */ }
+        Err(KcpError::Timeout) => { continue; }  // 暂无数据，继续等待
         Err(e) => break,
     }
 }

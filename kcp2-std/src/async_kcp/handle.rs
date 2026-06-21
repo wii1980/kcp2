@@ -4,7 +4,7 @@ use bytes::{Bytes, BytesMut};
 use std::time::Duration;
 
 use kcp2_core::{KcpError, SendHandle, Result};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use super::cmd::KcpCmd;
 
@@ -14,11 +14,18 @@ use super::cmd::KcpCmd;
 #[derive(Clone)]
 pub(crate) struct KcpHandle {
     pub(crate) cmd_tx: mpsc::Sender<KcpCmd>,
+    shutdown_tx: watch::Sender<bool>,
 }
 
 impl KcpHandle {
-    pub(crate) fn new(cmd_tx: mpsc::Sender<KcpCmd>) -> Self {
-        Self { cmd_tx }
+    pub(crate) fn new(
+        cmd_tx: mpsc::Sender<KcpCmd>,
+        shutdown_tx: watch::Sender<bool>,
+    ) -> Self {
+        Self {
+            cmd_tx,
+            shutdown_tx,
+        }
     }
 
     /// 发送数据
@@ -172,28 +179,14 @@ impl KcpHandle {
     }
 
     /// 检查句柄是否已确认
-    pub(crate) async fn is_send_acked(&self, handle: SendHandle) -> bool {
-        let (tx, rx) = oneshot::channel();
-        if self
-            .cmd_tx
-            .send(KcpCmd::IsSendAcked { handle, ack: tx })
-            .await
-            .is_err()
-        {
-            return false;
-        }
-        rx.await.unwrap_or(false)
-    }
-
     /// 强制标记连接为死亡状态
     pub(crate) fn kill(&self) {
-        // kill 是 fire-and-forget，用 try_send 避免在 sync 上下文中 await
-        if self.cmd_tx.try_send(KcpCmd::Kill).is_err() {
-            log::warn!("KcpHandle::kill: command channel full, kill command dropped");
-        }
+        // Use the shutdown watch channel for guaranteed delivery
+        // (watch channel is unbounded, unlike the command mpsc channel)
+        let _ = self.shutdown_tx.send(true);
     }
 
-        /// 发送 CMD_RECONNECT
+    /// 发送 CMD_RECONNECT
     pub(crate) async fn send_reconnect(&self) -> Result<()> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
@@ -201,9 +194,5 @@ impl KcpHandle {
             .await
             .map_err(|_| KcpError::DeadLink)?;
         rx.await.map_err(|_| KcpError::DeadLink)?
-    }
-
-    pub(crate) async fn reset_rto(&self) {
-        let _ = self.cmd_tx.send(KcpCmd::ResetRto).await;
     }
 }

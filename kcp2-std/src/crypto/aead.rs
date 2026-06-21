@@ -30,33 +30,43 @@ impl Aes256GcmCrypto {
     }
 
     /// 生成一个随机 32 字节密钥
-    pub fn generate_key() -> [u8; 32] {
+    pub fn generate_key() -> Result<[u8; 32], getrandom::Error> {
         let mut key = [0u8; 32];
-        getrandom::getrandom(&mut key).expect("RNG failure");
-        key
+        getrandom::getrandom(&mut key)?;
+        Ok(key)
     }
 }
 
 impl KcpCrypto for Aes256GcmCrypto {
-    fn encrypt(&self, conv: u32, plaintext: &[u8]) -> Vec<u8> {
+    fn encrypt(&self, conv: u32, plaintext: &[u8]) -> Option<Vec<u8>> {
         let counter = self.nonce_counter.fetch_add(1, Ordering::Relaxed);
         let mut nonce_bytes = [0u8; NONCE_SIZE];
         nonce_bytes[..8].copy_from_slice(&counter.to_le_bytes());
+        nonce_bytes[8..12].copy_from_slice(&conv.to_le_bytes());
         let nonce = Nonce::from_slice(&nonce_bytes);
 
-        let mut ciphertext = self
+        let mut ciphertext = match self
             .cipher
             .encrypt(nonce, plaintext)
-            .expect("AES-256-GCM encryption should not fail");
+        {
+            Ok(ct) => ct,
+            Err(e) => {
+                log::error!("AES-256-GCM encrypt failed: {:?}", e);
+                return None;
+            }
+        };
 
-        debug_assert!(ciphertext.len() == plaintext.len() + TAG_SIZE);
+        if ciphertext.len() != plaintext.len() + TAG_SIZE {
+            log::error!("AES-256-GCM ciphertext size mismatch: got {}, expected {}", ciphertext.len(), plaintext.len() + TAG_SIZE);
+            return None;
+        }
 
         let mut packet = Vec::with_capacity(CONV_SIZE + NONCE_SIZE + ciphertext.len());
         packet.extend_from_slice(&conv.to_le_bytes());
         packet.extend_from_slice(&nonce_bytes);
         packet.append(&mut ciphertext);
 
-        packet
+        Some(packet)
     }
 
     fn decrypt(&self, buf: &[u8]) -> Option<Vec<u8>> {
@@ -103,31 +113,43 @@ impl ChaCha20Poly1305Crypto {
     }
 
     /// 生成一个随机 32 字节密钥
-    pub fn generate_key() -> [u8; 32] {
+    pub fn generate_key() -> Result<[u8; 32], getrandom::Error> {
         let mut key = [0u8; 32];
-        getrandom::getrandom(&mut key).expect("RNG failure");
-        key
+        getrandom::getrandom(&mut key)?;
+        Ok(key)
     }
 }
 
 impl KcpCrypto for ChaCha20Poly1305Crypto {
-    fn encrypt(&self, conv: u32, plaintext: &[u8]) -> Vec<u8> {
+    fn encrypt(&self, conv: u32, plaintext: &[u8]) -> Option<Vec<u8>> {
         let counter = self.nonce_counter.fetch_add(1, Ordering::Relaxed);
         let mut nonce_bytes = [0u8; NONCE_SIZE];
         nonce_bytes[..8].copy_from_slice(&counter.to_le_bytes());
+        nonce_bytes[8..12].copy_from_slice(&conv.to_le_bytes());
         let nonce = chacha20poly1305::Nonce::from_slice(&nonce_bytes);
 
-        let mut ciphertext = self
+        let mut ciphertext = match self
             .cipher
             .encrypt(nonce, plaintext)
-            .expect("ChaCha20-Poly1305 encryption should not fail");
+        {
+            Ok(ct) => ct,
+            Err(e) => {
+                log::error!("ChaCha20-Poly1305 encrypt failed: {:?}", e);
+                return None;
+            }
+        };
+
+        if ciphertext.len() != plaintext.len() + TAG_SIZE {
+            log::error!("ChaCha20-Poly1305 ciphertext size mismatch: got {}, expected {}", ciphertext.len(), plaintext.len() + TAG_SIZE);
+            return None;
+        }
 
         let mut packet = Vec::with_capacity(CONV_SIZE + NONCE_SIZE + ciphertext.len());
         packet.extend_from_slice(&conv.to_le_bytes());
         packet.extend_from_slice(&nonce_bytes);
         packet.append(&mut ciphertext);
 
-        packet
+        Some(packet)
     }
 
     fn decrypt(&self, buf: &[u8]) -> Option<Vec<u8>> {
@@ -158,13 +180,13 @@ mod tests {
 
     #[test]
     fn test_aes256_gcm_roundtrip() {
-        let key = Aes256GcmCrypto::generate_key();
+        let key = Aes256GcmCrypto::generate_key().unwrap();
         let crypto = Aes256GcmCrypto::new(&key);
 
         let conv = 42u32;
         let plaintext = b"hello kcp with encryption!";
 
-        let encrypted = crypto.encrypt(conv, plaintext);
+        let encrypted = crypto.encrypt(conv, plaintext).unwrap();
         let decrypted = crypto.decrypt(&encrypted).unwrap();
 
         assert_eq!(decrypted, plaintext);
@@ -172,10 +194,10 @@ mod tests {
 
     #[test]
     fn test_aes256_gcm_tamper_detected() {
-        let key = Aes256GcmCrypto::generate_key();
+        let key = Aes256GcmCrypto::generate_key().unwrap();
         let crypto = Aes256GcmCrypto::new(&key);
 
-        let encrypted = crypto.encrypt(1, b"test data");
+        let encrypted = crypto.encrypt(1, b"test data").unwrap();
         let mut tampered = encrypted.clone();
         if let Some(b) = tampered.last_mut() {
             *b ^= 0x01; // flip a bit in the tag or last byte
@@ -185,7 +207,7 @@ mod tests {
 
     #[test]
     fn test_aes256_gcm_short_buffer() {
-        let key = Aes256GcmCrypto::generate_key();
+        let key = Aes256GcmCrypto::generate_key().unwrap();
         let crypto = Aes256GcmCrypto::new(&key);
         assert!(crypto.decrypt(&[0u8; 4]).is_none());
         assert!(crypto.decrypt(&[0u8; 31]).is_none());
@@ -193,22 +215,22 @@ mod tests {
 
     #[test]
     fn test_aes256_gcm_overhead() {
-        let key = Aes256GcmCrypto::generate_key();
+        let key = Aes256GcmCrypto::generate_key().unwrap();
         let crypto = Aes256GcmCrypto::new(&key);
-        let encrypted = crypto.encrypt(1, &[0u8; 100]);
+        let encrypted = crypto.encrypt(1, &[0u8; 100]).unwrap();
         assert_eq!(encrypted.len(), 100 + crypto.overhead());
         assert_eq!(crypto.overhead(), 32);
     }
 
     #[test]
     fn test_chacha20_roundtrip() {
-        let key = ChaCha20Poly1305Crypto::generate_key();
+        let key = ChaCha20Poly1305Crypto::generate_key().unwrap();
         let crypto = ChaCha20Poly1305Crypto::new(&key);
 
         let conv = 99u32;
         let plaintext = b"chaCha20 test payload!";
 
-        let encrypted = crypto.encrypt(conv, plaintext);
+        let encrypted = crypto.encrypt(conv, plaintext).unwrap();
         let decrypted = crypto.decrypt(&encrypted).unwrap();
 
         assert_eq!(decrypted, plaintext);
@@ -216,10 +238,10 @@ mod tests {
 
     #[test]
     fn test_chacha20_tamper_detected() {
-        let key = ChaCha20Poly1305Crypto::generate_key();
+        let key = ChaCha20Poly1305Crypto::generate_key().unwrap();
         let crypto = ChaCha20Poly1305Crypto::new(&key);
 
-        let encrypted = crypto.encrypt(1, b"test");
+        let encrypted = crypto.encrypt(1, b"test").unwrap();
         let mut tampered = encrypted.clone();
         if let Some(b) = tampered.last_mut() {
             *b ^= 0xFF;
@@ -229,31 +251,31 @@ mod tests {
 
     #[test]
     fn test_chacha20_overhead() {
-        let key = ChaCha20Poly1305Crypto::generate_key();
+        let key = ChaCha20Poly1305Crypto::generate_key().unwrap();
         let crypto = ChaCha20Poly1305Crypto::new(&key);
-        let encrypted = crypto.encrypt(1, &[0u8; 100]);
+        let encrypted = crypto.encrypt(1, &[0u8; 100]).unwrap();
         assert_eq!(encrypted.len(), 100 + crypto.overhead());
         assert_eq!(crypto.overhead(), 32);
     }
 
     #[test]
     fn test_unique_nonces() {
-        let key = Aes256GcmCrypto::generate_key();
+        let key = Aes256GcmCrypto::generate_key().unwrap();
         let crypto = Aes256GcmCrypto::new(&key);
 
-        let e1 = crypto.encrypt(1, b"a");
-        let e2 = crypto.encrypt(1, b"b");
+        let e1 = crypto.encrypt(1, b"a").unwrap();
+        let e2 = crypto.encrypt(1, b"b").unwrap();
         // nonce should differ (counter increments)
         assert_ne!(&e1[4..16], &e2[4..16]);
     }
 
     #[test]
     fn test_conv_preserved_in_plaintext() {
-        let key = Aes256GcmCrypto::generate_key();
+        let key = Aes256GcmCrypto::generate_key().unwrap();
         let crypto = Aes256GcmCrypto::new(&key);
 
         let conv = 12345u32;
-        let encrypted = crypto.encrypt(conv, b"data");
+        let encrypted = crypto.encrypt(conv, b"data").unwrap();
         let extracted_conv =
             u32::from_le_bytes([encrypted[0], encrypted[1], encrypted[2], encrypted[3]]);
         assert_eq!(extracted_conv, conv);

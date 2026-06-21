@@ -32,8 +32,8 @@ pub trait EmbKcpCrypto {
     /// - `conv`: KCP 会话 ID，需明文输出以便路由
     /// - `plaintext`: KCP segment(s) 原始字节
     ///
-    /// 返回加密后的完整 UDP 载荷。
-    fn encrypt(&self, conv: u32, plaintext: &[u8]) -> Vec<u8>;
+    /// 返回 `Some(encrypted)` 加密成功，`None` 加密失败（已记录日志）。
+    fn encrypt(&self, conv: u32, plaintext: &[u8]) -> Option<Vec<u8>>;
 
     /// 解密一个收到的 UDP 包
     ///
@@ -48,8 +48,8 @@ pub trait EmbKcpCrypto {
 
 /// 空实现 — 不加密，零开销
 impl EmbKcpCrypto for () {
-    fn encrypt(&self, _conv: u32, plaintext: &[u8]) -> Vec<u8> {
-        plaintext.to_vec()
+    fn encrypt(&self, _conv: u32, plaintext: &[u8]) -> Option<Vec<u8>> {
+        Some(plaintext.to_vec())
     }
 
     fn decrypt(&self, buf: &[u8]) -> Option<Vec<u8>> {
@@ -99,30 +99,38 @@ mod aead_impl {
     }
 
     impl EmbKcpCrypto for Aes256GcmCrypto {
-        fn encrypt(&self, conv: u32, plaintext: &[u8]) -> Vec<u8> {
+        fn encrypt(&self, conv: u32, plaintext: &[u8]) -> Option<Vec<u8>> {
             let counter = self.nonce_counter.get();
             let next = counter.wrapping_add(1);
             if next == 0 {
                 log::error!("AES-256-GCM nonce counter overflow! Key may be compromised.");
+                return None;
             }
             self.nonce_counter.set(next);
             let mut nonce_bytes = [0u8; NONCE_SIZE];
             nonce_bytes[..8].copy_from_slice(&counter.to_le_bytes());
+            nonce_bytes[8..12].copy_from_slice(&conv.to_le_bytes());
             let nonce = Nonce::from_slice(&nonce_bytes);
 
-            let ciphertext = self.cipher.encrypt(nonce, plaintext).unwrap_or_else(|e| {
-                log::error!("AES-256-GCM encrypt failed: {:?}", e);
-                panic!("AES-256-GCM encryption failure");
-            });
+            let ciphertext = match self.cipher.encrypt(nonce, plaintext) {
+                Ok(ct) => ct,
+                Err(e) => {
+                    log::error!("AES-256-GCM encrypt failed: {:?}", e);
+                    return None;
+                }
+            };
 
-            debug_assert!(ciphertext.len() == plaintext.len() + TAG_SIZE);
+            if ciphertext.len() != plaintext.len() + TAG_SIZE {
+                log::error!("AES-256-GCM ciphertext size mismatch: got {}, expected {}", ciphertext.len(), plaintext.len() + TAG_SIZE);
+                return None;
+            }
 
             let mut packet = Vec::with_capacity(CONV_SIZE + NONCE_SIZE + ciphertext.len());
             packet.extend_from_slice(&conv.to_le_bytes());
             packet.extend_from_slice(&nonce_bytes);
             packet.append(&mut ciphertext);
 
-            packet
+            Some(packet)
         }
 
         fn decrypt(&self, buf: &[u8]) -> Option<Vec<u8>> {
@@ -171,28 +179,33 @@ mod aead_impl {
     }
 
     impl EmbKcpCrypto for ChaCha20Poly1305Crypto {
-        fn encrypt(&self, conv: u32, plaintext: &[u8]) -> Vec<u8> {
+        fn encrypt(&self, conv: u32, plaintext: &[u8]) -> Option<Vec<u8>> {
             let counter = self.nonce_counter.get();
             let next = counter.wrapping_add(1);
             if next == 0 {
                 log::error!("ChaCha20-Poly1305 nonce counter overflow! Key may be compromised.");
+                return None;
             }
             self.nonce_counter.set(next);
             let mut nonce_bytes = [0u8; NONCE_SIZE];
             nonce_bytes[..8].copy_from_slice(&counter.to_le_bytes());
+            nonce_bytes[8..12].copy_from_slice(&conv.to_le_bytes());
             let nonce = chacha20poly1305::Nonce::from_slice(&nonce_bytes);
 
-            let ciphertext = self.cipher.encrypt(nonce, plaintext).unwrap_or_else(|e| {
-                log::error!("ChaCha20-Poly1305 encrypt failed: {:?}", e);
-                panic!("ChaCha20-Poly1305 encryption failure");
-            });
+            let ciphertext = match self.cipher.encrypt(nonce, plaintext) {
+                Ok(ct) => ct,
+                Err(e) => {
+                    log::error!("ChaCha20-Poly1305 encrypt failed: {:?}", e);
+                    return None;
+                }
+            };
 
             let mut packet = Vec::with_capacity(CONV_SIZE + NONCE_SIZE + ciphertext.len());
             packet.extend_from_slice(&conv.to_le_bytes());
             packet.extend_from_slice(&nonce_bytes);
             packet.append(&mut ciphertext);
 
-            packet
+            Some(packet)
         }
 
         fn decrypt(&self, buf: &[u8]) -> Option<Vec<u8>> {

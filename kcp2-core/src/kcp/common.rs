@@ -91,7 +91,8 @@ pub(crate) fn congestion_fast_retransmit(
 ) -> (u16, u16, u32) {
     let inflight = snd_nxt.wrapping_sub(snd_una);
     let ssthresh = (inflight / 2).max(THRESH_MIN as u32) as u16;
-    let cwnd = ssthresh + resent as u16;
+    let resent_clamped = resent.min(u16::MAX as u32) as u16;
+    let cwnd = ssthresh + resent_clamped;
     let incr = cwnd as u32 * mss as u32;
     (cwnd, ssthresh, incr)
 }
@@ -99,4 +100,44 @@ pub(crate) fn congestion_fast_retransmit(
 pub(crate) fn congestion_loss(cwnd: u16, mss: usize) -> (u16, u16, u32) {
     let ssthresh = (cwnd / 2).max(THRESH_MIN);
     (1, ssthresh, mss as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_congestion_fast_retransmit_normal() {
+        let (cwnd, ssthresh, incr) = congestion_fast_retransmit(100, 0, 3, 1400);
+        assert_eq!(ssthresh, 50);
+        assert_eq!(cwnd, 53);
+        assert_eq!(incr, 53 * 1400);
+    }
+
+    #[test]
+    fn test_congestion_fast_retransmit_zero_inflight() {
+        let (cwnd, ssthresh, incr) = congestion_fast_retransmit(0, 0, 5, 1400);
+        assert_eq!(ssthresh, 2);
+        assert_eq!(cwnd, 7);
+        assert_eq!(incr, 7 * 1400);
+    }
+
+    #[test]
+    fn test_congestion_fast_retransmit_large_resent() {
+        let (cwnd, ssthresh, incr) = congestion_fast_retransmit(100, 0, 1000, 1400);
+        assert_eq!(ssthresh, 50);
+        assert_eq!(cwnd, 1050);
+        assert_eq!(incr, 1050 * 1400);
+    }
+
+    #[test]
+    fn test_congestion_fast_retransmit_clamp_expression() {
+        let a_large: u32 = u32::MAX;
+        let clamped = a_large.min(u16::MAX as u32) as u16;
+        assert_eq!(clamped, u16::MAX);
+
+        let small: u32 = 42;
+        let unchanged = small.min(u16::MAX as u32) as u16;
+        assert_eq!(unchanged, 42);
+    }
 }

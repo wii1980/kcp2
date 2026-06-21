@@ -15,7 +15,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use tokio::sync::{mpsc, watch};
 
-use kcp2_core::{KcpError, KcpOutput, SendHandle, Result};
+use kcp2_core::{KcpError, KcpOutput, Result};
 
 use crate::crypto::KcpCrypto;
 use crate::transport::KcpTransport;
@@ -57,6 +57,8 @@ pub(crate) struct ActorConfig {
     pub crypto: Option<Arc<dyn KcpCrypto>>,
     pub channel_capacity: usize,
     pub pending_send_cap: usize,
+    pub recv_timeout_ms: u64,
+    pub output_queue_size: usize,
 }
 
 impl ActorConfig {
@@ -76,6 +78,8 @@ impl ActorConfig {
             crypto: config.crypto.clone(),
             channel_capacity: config.channel_capacity,
             pending_send_cap: config.pending_send_cap,
+            recv_timeout_ms: config.timeout.as_millis() as u64,
+            output_queue_size: config.output_queue_size,
         }
     }
 }
@@ -98,7 +102,7 @@ impl<Output: KcpOutput + Send + 'static> AsyncKcp<Output> {
         });
 
         Self {
-            handle: KcpHandle::new(cmd_tx),
+            handle: KcpHandle::new(cmd_tx, shutdown_tx.clone()),
             _shutdown_tx: shutdown_tx,
             _phantom: PhantomData,
         }
@@ -123,6 +127,8 @@ impl<Output: KcpOutput + Send + 'static> AsyncKcp<Output> {
             shutdown_rx,
             actor_config.crypto.clone(),
             actor_config.pending_send_cap,
+            actor_config.recv_timeout_ms,
+            actor_config.output_queue_size,
         );
 
         // 应用配置
@@ -147,7 +153,7 @@ impl<Output: KcpOutput + Send + 'static> AsyncKcp<Output> {
         });
 
         Self {
-            handle: KcpHandle::new(cmd_tx),
+            handle: KcpHandle::new(cmd_tx, shutdown_tx.clone()),
             _shutdown_tx: shutdown_tx,
             _phantom: PhantomData,
         }
@@ -167,28 +173,8 @@ impl<Output: KcpOutput + Send + 'static> AsyncKcp<Output> {
         self.handle.send(data).await
     }
 
-    pub async fn send_with_handle(&self, data: &[u8]) -> Result<SendHandle> {
-        self.handle.send_with_handle(data).await
-    }
-
-    pub async fn is_send_acked(&self, handle: SendHandle) -> bool {
-        self.handle.is_send_acked(handle).await
-    }
-
     pub async fn send_and_wait_ack(&self, data: &[u8]) -> Result<()> {
         self.handle.send_and_wait_ack(data).await
-    }
-
-    pub async fn wait_ack(&self, handle: SendHandle) -> Result<()> {
-        self.handle.wait_ack(handle).await
-    }
-
-    pub async fn wait_ack_with_timeout(
-        &self,
-        handle: SendHandle,
-        timeout: Duration,
-    ) -> Result<()> {
-        self.handle.wait_ack_with_timeout(handle, timeout).await
     }
 
     pub async fn send_and_wait_ack_with_timeout(
@@ -235,10 +221,6 @@ impl<Output: KcpOutput + Send + 'static> AsyncKcp<Output> {
 
     pub async fn wait_snd(&self) -> usize {
         self.handle.wait_snd().await
-    }
-
-    pub async fn reset_rto(&self) {
-        self.handle.reset_rto().await
     }
 
     pub fn kill(&self) {

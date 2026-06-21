@@ -34,10 +34,6 @@ pub enum KcpError {
         wait_snd: usize,
         max: usize,
     },
-    #[cfg(feature = "alloc")]
-    IoError(alloc::string::String),
-    #[cfg(not(feature = "alloc"))]
-    IoError(&'static str),
 }
 
 impl fmt::Display for KcpError {
@@ -74,7 +70,6 @@ impl fmt::Display for KcpError {
             Self::SendBackpressure { wait_snd, max } => {
                 write!(f, "send backpressure: wait_snd {wait_snd} >= max {max}")
             }
-            Self::IoError(msg) => write!(f, "IO error: {msg}"),
         }
     }
 }
@@ -129,7 +124,6 @@ mod tests {
             max: 3,
         });
         let _ = format!("{}", KcpError::InvalidCmd { cmd: 99 });
-        let _ = format!("{}", KcpError::IoError(alloc::string::String::from("test error")));
     }
 
     #[test]

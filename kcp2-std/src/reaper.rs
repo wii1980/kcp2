@@ -104,13 +104,14 @@ impl ConnectionReaper {
 
             let elapsed = now_ms.saturating_sub(conn.last_active_millis());
             if elapsed > self.timeout_ms {
-                // 先关闭 KCP 状态，使阻塞在 recv() 的协程收到 DeadLink 错误
                 conn.close();
                 drop(conn);
-                // 调用外部回调执行额外清理（如 scheduler.unregister）
                 cleanup(conv);
                 connections.remove(&conv);
                 removed += 1;
+            } else {
+                let new_expiry = now_ms as u64 + self.timeout_ms as u64;
+                heap.push(Reverse((new_expiry, conv)));
             }
         }
 

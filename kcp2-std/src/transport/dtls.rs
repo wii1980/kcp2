@@ -103,6 +103,9 @@ const DEFAULT_SEND_QUEUE_SIZE: usize = 256;
 /// 默认每会话入站缓冲区大小
 const DEFAULT_RECV_BUF_SIZE: usize = 4096;
 
+/// 默认最大 DTLS 会话数（防止资源耗尽）
+const DEFAULT_MAX_DTLS_SESSIONS: usize = 1024;
+
 /// DTLS 配置（客户端 / 服务端共用）
 ///
 /// 内部委托给 [`webrtc_dtls::config::Config`]，并补充 KCP 层关心的参数：
@@ -119,6 +122,8 @@ pub struct DtlsConfig {
     pub send_queue_size: usize,
     /// 入站缓冲区单包最大字节
     pub recv_buf_size: usize,
+    /// 最大 DTLS 会话数（超出后拒绝新连接，防止资源耗尽）
+    pub max_sessions: usize,
 }
 
 impl Default for DtlsConfig {
@@ -129,6 +134,7 @@ impl Default for DtlsConfig {
             overhead: DEFAULT_DTLS_OVERHEAD,
             send_queue_size: DEFAULT_SEND_QUEUE_SIZE,
             recv_buf_size: DEFAULT_RECV_BUF_SIZE,
+            max_sessions: DEFAULT_MAX_DTLS_SESSIONS,
         }
     }
 }
@@ -191,6 +197,12 @@ impl DtlsConfig {
         self.recv_buf_size = n.max(512);
         self
     }
+
+    /// 自定义最大 DTLS 会话数（默认 1024）
+    pub fn max_sessions(mut self, n: usize) -> Self {
+        self.max_sessions = n.max(1);
+        self
+    }
 }
 
 impl std::fmt::Debug for DtlsConfig {
@@ -200,6 +212,7 @@ impl std::fmt::Debug for DtlsConfig {
             .field("overhead", &self.overhead)
             .field("send_queue_size", &self.send_queue_size)
             .field("recv_buf_size", &self.recv_buf_size)
+            .field("max_sessions", &self.max_sessions)
             .field("cipher_suites", &self.inner.cipher_suites)
             .finish()
     }
@@ -251,6 +264,7 @@ impl DtlsClientTransport {
             overhead,
             send_queue_size,
             recv_buf_size,
+            max_sessions: _,
         } = config;
 
         let conn = tokio::time::timeout(
@@ -343,9 +357,18 @@ impl KcpTransport for DtlsClientTransport {
             let mut rx = self.decrypted_rx.lock().await;
             match rx.recv().await {
                 Some(data) => {
-                    let n = data.len().min(buf.len());
-                    buf[..n].copy_from_slice(&data[..n]);
-                    Ok(n)
+                    if data.len() > buf.len() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!(
+                                "DTLS recv buffer too small: {} bytes needed, {} available",
+                                data.len(),
+                                buf.len()
+                            ),
+                        ));
+                    }
+                    buf[..data.len()].copy_from_slice(&data);
+                    Ok(data.len())
                 }
                 None => Err(io::Error::new(
                     io::ErrorKind::NotConnected,
@@ -419,6 +442,7 @@ impl DtlsServerTransport {
             overhead,
             send_queue_size,
             recv_buf_size,
+            max_sessions,
         } = config;
 
         let raw_listener = webrtc_dtls::listener::listen(local, inner)
@@ -450,6 +474,7 @@ impl DtlsServerTransport {
                     handshake_timeout,
                     send_queue_size,
                     recv_buf_size,
+                    max_sessions,
                 )
                 .await;
             })
@@ -545,9 +570,18 @@ impl KcpTransport for DtlsServerTransport {
             let mut rx = self.decrypted_rx.lock().await;
             match rx.recv().await {
                 Some((data, peer)) => {
-                    let n = data.len().min(buf.len());
-                    buf[..n].copy_from_slice(&data[..n]);
-                    Ok((n, peer))
+                    if data.len() > buf.len() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!(
+                                "DTLS recv buffer too small: {} bytes needed, {} available",
+                                data.len(),
+                                buf.len()
+                            ),
+                        ));
+                    }
+                    buf[..data.len()].copy_from_slice(&data);
+                    Ok((data.len(), peer))
                 }
                 None => Err(io::Error::new(
                     io::ErrorKind::NotConnected,
@@ -626,8 +660,35 @@ async fn run_accept_loop(
     handshake_timeout: Duration,
     send_queue_size: usize,
     recv_buf_size: usize,
+    max_sessions: usize,
 ) {
     while !closed.load(Ordering::SeqCst) {
+        // Enforce session count limit to prevent resource exhaustion
+        if sessions.len() >= max_sessions {
+            let accept_fut = listener.accept();
+            let result = tokio::time::timeout(
+                Duration::from_secs(1),
+                accept_fut,
+            )
+            .await;
+            match result {
+                Ok(Ok((_conn, peer))) => {
+                    log::warn!(
+                        "DTLS max sessions ({}) reached, rejecting connection from {}",
+                        max_sessions,
+                        peer
+                    );
+                }
+                Ok(Err(e)) => {
+                    log::warn!("DTLS accept error: {}", e);
+                }
+                Err(_) => {
+                    // timeout without incoming connection, retry the check
+                }
+            }
+            continue;
+        }
+
         let accept_fut = listener.accept();
         let result = tokio::time::timeout(handshake_timeout, accept_fut).await;
         match result {
